@@ -77,6 +77,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 # Resolve Hermes home directory (respects HERMES_HOME override)
 from hermes_constants import get_hermes_home
+from hq.storage import record_gateway_intake
 from utils import atomic_yaml_write, is_truthy_value
 _hermes_home = get_hermes_home()
 
@@ -3471,6 +3472,20 @@ class GatewayRunner:
                 "session_id": session_entry.session_id,
                 "session_key": session_key,
             })
+
+        # Mirror the gateway intake into the shared HQ layer so BD/review
+        # infrastructure can treat the first contact as a structured artifact.
+        try:
+            record_gateway_intake(
+                source,
+                session_key,
+                event.text or "",
+                session_id=session_entry.session_id,
+                message_id=event.message_id,
+                is_new_session=_is_new_session,
+            )
+        except Exception as e:
+            logger.debug("HQ intake mirror failed (non-fatal): %s", e)
         
         # Build session context
         context = build_session_context(source, self.config, session_entry)

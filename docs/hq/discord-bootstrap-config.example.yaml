@@ -1,0 +1,54 @@
+# Discord bootstrap config for TemperStone HQ
+#
+# Purpose:
+# - bootstrap the workspace channel structure on startup
+# - keep channel naming explicit and non-abbreviated
+# - let Hermes mirror the first intake message into HQ artifacts
+#
+# Notes:
+# - Replace placeholder IDs before enabling in production.
+# - The bot needs Manage Channels to create missing channels.
+
+discord:
+  bootstrap_guild_id: "1493165451910578196"
+
+  # Channels Hermes should create if missing.
+  # Existing channels are left untouched.
+  bootstrap_channels:
+    - "01-전략"
+    - "02-개인사업자-운영"
+    - "02-제품"
+    - "03-콘텐츠"
+    - "04-채널"
+    - "05-운영"
+    - "06-재무"
+    - "07-회고"
+    - "08-브랜딩"
+    - "09-아카이브"
+
+  # Optional routing / behavior controls.
+  allowed_channels:
+    - "YOUR_ALLOWED_CHANNEL_ID"
+
+  free_response_channels:
+    - "YOUR_FREE_RESPONSE_CHANNEL_ID"
+
+  no_thread_channels:
+    - "YOUR_NO_THREAD_CHANNEL_ID"
+
+  auto_thread: true
+  require_mention: false
+
+  # Bind channel-specific skills if you want certain channels to trigger a narrower workflow.
+  channel_skill_bindings:
+    - id: "YOUR_INTAKE_CHANNEL_ID"
+      skills:
+        - "bd-intake"
+
+    - id: "YOUR_REVIEW_CHANNEL_ID"
+      skills:
+        - "bd-review"
+
+    - id: "YOUR_DECISIONS_CHANNEL_ID"
+      skills:
+        - "decision-log"

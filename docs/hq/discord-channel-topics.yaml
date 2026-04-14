@@ -1,0 +1,78 @@
+# TemperStone HQ Discord channel topics and activity guide
+#
+# This file describes the channel topic text Hermes should use when bootstrapping
+# or updating channel descriptions.
+#
+# Channel names are the primary key. Numeric IDs are optional.
+
+discord:
+  channels:
+    - name: "01-전략"
+      topic: "전사 전략, 우선순위, 큰 방향, 핵심 베팅"
+      activities:
+        - "새로운 큰 방향을 정리한다"
+        - "우선순위를 결정한다"
+        - "사업의 큰 베팅과 제외할 일을 적는다"
+
+    - name: "02-개인사업자-운영"
+      topic: "개인사업자 운영, 행정, 프로세스, 오너 결정"
+      activities:
+        - "사업자 운영 관련 메모를 남긴다"
+        - "반복 업무와 프로세스를 정리한다"
+        - "오너가 직접 결정해야 하는 일을 다룬다"
+
+    - name: "02-제품"
+      topic: "제품 범위, 로드맵, 우선순위, 리뷰"
+      activities:
+        - "기능 범위를 정의한다"
+        - "로드맵과 우선순위를 논의한다"
+        - "리뷰 결과와 수정 사항을 기록한다"
+
+    - name: "03-콘텐츠"
+      topic: "콘텐츠 기획, 초안, 발행, 피드백"
+      activities:
+        - "콘텐츠 아이디어를 모은다"
+        - "초안과 수정안을 다룬다"
+        - "발행 일정과 반응을 기록한다"
+
+    - name: "04-채널"
+      topic: "Discord, Telegram, 채널 구조, 운영 정책"
+      activities:
+        - "채널 구조와 운영 정책을 조정한다"
+        - "플랫폼 접점의 문제를 다룬다"
+        - "봇/권한/라우팅 이슈를 기록한다"
+
+    - name: "05-운영"
+      topic: "자동화, 서비스 상태, 워크플로우, 라우팅"
+      activities:
+        - "자동화 규칙을 추가하거나 고친다"
+        - "운영 이슈와 상태를 기록한다"
+        - "반복 작업의 개선안을 정리한다"
+
+    - name: "06-재무"
+      topic: "현금흐름, 회계, 지출, 재무 의사결정"
+      activities:
+        - "수입/지출을 기록한다"
+        - "재무 관련 판단을 남긴다"
+        - "정산과 회계 메모를 정리한다"
+
+    - name: "07-회고"
+      topic: "회고, 교훈, 결정 복기, 개선 포인트"
+      activities:
+        - "한 주/한 작업의 회고를 적는다"
+        - "잘된 점과 실패한 점을 정리한다"
+        - "다음 개선 액션을 기록한다"
+
+    - name: "08-브랜딩"
+      topic: "브랜딩, 톤, 네이밍, 대외 인상"
+      activities:
+        - "브랜드 톤과 말투를 정리한다"
+        - "이름 후보와 표현을 비교한다"
+        - "대외 메시지와 인상을 다룬다"
+
+    - name: "09-아카이브"
+      topic: "완료된 항목, 종료 기록, 보관용 아카이브"
+      activities:
+        - "끝난 작업을 보관한다"
+        - "예전 결정과 문서를 찾아본다"
+        - "더 이상 수정하지 않을 항목을 남긴다"

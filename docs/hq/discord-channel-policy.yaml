@@ -1,0 +1,63 @@
+# TemperStone HQ Discord channel policy
+#
+# This file is the recommended starting policy after the workspace channels exist.
+# Channel names are accepted directly by Hermes; numeric IDs are optional.
+
+# Whitelist: channels Hermes is allowed to respond in.
+# Use the channel names directly if you do not want to copy IDs yet.
+allowed_channels:
+  - "01-전략"
+  - "02-개인사업자-운영"
+  - "02-제품"
+  - "03-콘텐츠"
+  - "04-채널"
+  - "05-운영"
+  - "06-재무"
+  - "07-회고"
+  - "08-브랜딩"
+  - "09-아카이브"
+
+# Channels where Hermes may reply without requiring a mention.
+# For a solo-operated workspace, keeping this broad is fine.
+free_response_channels:
+  - "01-전략"
+  - "02-개인사업자-운영"
+  - "02-제품"
+  - "03-콘텐츠"
+  - "04-채널"
+  - "05-운영"
+  - "06-재무"
+  - "07-회고"
+  - "08-브랜딩"
+  - "09-아카이브"
+
+# Channels where Hermes should reply directly and avoid creating a thread.
+# Good candidates for summary-only or administrative surfaces.
+no_thread_channels:
+  - "04-채널"
+  - "06-재무"
+  - "07-회고"
+  - "09-아카이브"
+
+# Optional per-channel workflow bindings.
+# Replace names with IDs later if you want, but names work too.
+channel_skill_bindings:
+  - id: "01-전략"
+    skills:
+      - "bd-intake"
+
+  - id: "02-제품"
+    skills:
+      - "bd-review"
+
+  - id: "05-운영"
+    skills:
+      - "hq-ops"
+
+  - id: "06-재무"
+    skills:
+      - "hq-ops"
+
+  - id: "07-회고"
+    skills:
+      - "review-loop"

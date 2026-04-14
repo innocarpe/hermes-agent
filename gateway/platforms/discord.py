@@ -715,6 +715,143 @@ class DiscordAdapter(BasePlatformAdapter):
         except Exception as e:  # pragma: no cover - defensive logging
             logger.warning("[%s] Slash command sync failed: %s", self.name, e, exc_info=True)
 
+        try:
+            await self._bootstrap_workspace_channels()
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:  # pragma: no cover - defensive logging
+            logger.warning("[%s] Workspace channel bootstrap failed: %s", self.name, e, exc_info=True)
+
+    def _bootstrap_channel_specs(self) -> list[dict[str, Any]]:
+        """Return normalized Discord workspace channel bootstrap specs."""
+        raw = self.config.extra.get("bootstrap_channels", [])
+        if not raw:
+            return []
+        if isinstance(raw, str):
+            raw = [part.strip() for part in raw.split(",") if part.strip()]
+        if not isinstance(raw, list):
+            return []
+
+        specs: list[dict[str, Any]] = []
+        for item in raw:
+            if isinstance(item, str):
+                name = item.strip()
+                if not name:
+                    continue
+                specs.append({"name": name, "kind": "text"})
+                continue
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name", "")).strip()
+            if not name:
+                continue
+            spec = dict(item)
+            spec["name"] = name
+            spec["kind"] = str(spec.get("kind", "text") or "text").strip().lower()
+            if not spec.get("topic") and spec.get("description"):
+                spec["topic"] = str(spec["description"]).strip()
+            specs.append(spec)
+        return specs
+
+    async def _resolve_bootstrap_guild(self) -> Optional[Any]:
+        """Resolve the guild to provision workspace channels in."""
+        if not self._client:
+            return None
+
+        raw_guild_id = self.config.extra.get("bootstrap_guild_id") or os.getenv("DISCORD_BOOTSTRAP_GUILD_ID")
+        if raw_guild_id:
+            try:
+                guild_id = int(str(raw_guild_id))
+            except (TypeError, ValueError):
+                logger.warning("[%s] Invalid bootstrap guild id: %r", self.name, raw_guild_id)
+            else:
+                guild = self._client.get_guild(guild_id)
+                if guild is not None:
+                    return guild
+
+        home_channel = getattr(self.config, "home_channel", None)
+        if home_channel and getattr(home_channel, "platform", None) == Platform.DISCORD:
+            channel_id = str(getattr(home_channel, "chat_id", "") or "").strip()
+            if channel_id:
+                try:
+                    channel = self._client.get_channel(int(channel_id))
+                    if channel is None:
+                        channel = await self._client.fetch_channel(int(channel_id))
+                    guild = getattr(channel, "guild", None)
+                    if guild is not None:
+                        return guild
+                except Exception as e:
+                    logger.debug("[%s] Could not resolve bootstrap guild from home channel: %s", self.name, e)
+
+        guilds = list(getattr(self._client, "guilds", []) or [])
+        if len(guilds) == 1:
+            return guilds[0]
+        return None
+
+    async def _bootstrap_workspace_channels(self) -> None:
+        """Create missing Discord workspace channels from config."""
+        if not self._client:
+            return
+
+        specs = self._bootstrap_channel_specs()
+        if not specs:
+            return
+
+        guild = await self._resolve_bootstrap_guild()
+        if guild is None:
+            logger.warning(
+                "[%s] Workspace channel bootstrap skipped: no unique Discord guild could be resolved",
+                self.name,
+            )
+            return
+
+        existing_names = {
+            str(getattr(channel, "name", "")).lower(): channel
+            for channel in getattr(guild, "channels", [])
+            if getattr(channel, "name", None)
+        }
+
+        for spec in specs:
+            name = spec["name"]
+            key = name.lower()
+            kind = spec.get("kind", "text")
+            reason = f"Hermes workspace bootstrap: {name}"
+            topic = str(spec.get("topic", "")).strip() or None
+            existing = existing_names.get(key)
+
+            if existing is not None:
+                if topic and hasattr(existing, "edit") and kind in ("text", "forum"):
+                    try:
+                        current_topic = getattr(existing, "topic", None)
+                        if current_topic != topic:
+                            await existing.edit(topic=topic, reason=reason)
+                            logger.info("[%s] Updated Discord workspace channel topic: %s", self.name, name)
+                    except Exception as e:
+                        logger.warning("[%s] Failed to update Discord workspace channel topic %s: %s", self.name, name, e)
+                continue
+
+            try:
+                if kind == "category":
+                    created = await guild.create_category(name=name, reason=reason)
+                elif kind == "forum" and hasattr(guild, "create_forum_channel"):
+                    kwargs = {"name": name, "reason": reason}
+                    if topic:
+                        kwargs["topic"] = topic
+                    created = await guild.create_forum_channel(**kwargs)
+                else:
+                    kwargs = {"name": name, "reason": reason}
+                    if topic:
+                        kwargs["topic"] = topic
+                    if spec.get("nsfw") is not None:
+                        kwargs["nsfw"] = bool(spec["nsfw"])
+                    if spec.get("slowmode_delay") is not None:
+                        kwargs["slowmode_delay"] = int(spec["slowmode_delay"])
+                    created = await guild.create_text_channel(**kwargs)
+                existing_names[key] = created
+                logger.info("[%s] Created Discord workspace channel: %s", self.name, name)
+            except Exception as e:
+                logger.warning("[%s] Failed to create Discord workspace channel %s: %s", self.name, name, e)
+
     async def _add_reaction(self, message: Any, emoji: str) -> bool:
         """Add an emoji reaction to a Discord message."""
         if not message or not hasattr(message, "add_reaction"):

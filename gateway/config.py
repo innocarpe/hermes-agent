@@ -617,6 +617,11 @@ def load_gateway_config() -> GatewayConfig:
                     if isinstance(ntc, list):
                         ntc = ",".join(str(v) for v in ntc)
                     os.environ["DISCORD_NO_THREAD_CHANNELS"] = str(ntc)
+                # Bootstrap workspace channels: preserved as platform.extra for the Discord adapter.
+                if "bootstrap_channels" in discord_cfg:
+                    bridged["bootstrap_channels"] = discord_cfg["bootstrap_channels"]
+                if "bootstrap_guild_id" in discord_cfg:
+                    bridged["bootstrap_guild_id"] = discord_cfg["bootstrap_guild_id"]
 
             # Telegram settings → env vars (env vars take precedence)
             telegram_cfg = yaml_cfg.get("telegram", {})
@@ -690,7 +695,7 @@ def load_gateway_config() -> GatewayConfig:
 
     # Override with environment variables
     _apply_env_overrides(config)
-    
+
     # --- Validate loaded values ---
     _validate_gateway_config(config)
 

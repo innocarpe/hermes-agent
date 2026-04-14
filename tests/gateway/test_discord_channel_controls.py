@@ -408,6 +408,117 @@ def test_config_bridges_channel_skill_bindings_into_discord_extra(monkeypatch, t
     ]
 
 
+def test_config_bridges_bootstrap_channels_into_discord_extra(monkeypatch, tmp_path):
+    """gateway/config.py should preserve discord.bootstrap_channels for workspace setup."""
+    import yaml
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(yaml.dump({
+        "discord": {
+            "bootstrap_guild_id": "123456789012345678",
+            "bootstrap_channels": [
+                "01-전략",
+                {"name": "05-운영", "kind": "text", "topic": "Operations"},
+            ],
+        },
+    }))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("DISCORD_BOT_TOKEN", "fake-token")
+
+    from gateway.config import Platform, load_gateway_config
+
+    config = load_gateway_config()
+    discord_extra = config.platforms[Platform.DISCORD].extra
+    assert discord_extra.get("bootstrap_guild_id") == "123456789012345678"
+    assert discord_extra.get("bootstrap_channels") == [
+        "01-전략",
+        {"name": "05-운영", "kind": "text", "topic": "Operations"},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_workspace_channels_updates_existing_channel_topics(monkeypatch):
+    """DiscordAdapter should update existing workspace channel topics when provided."""
+    from gateway.platforms.discord import DiscordAdapter
+
+    existing_channel = SimpleNamespace(name="01-전략", topic=None, edit=AsyncMock())
+    guild = SimpleNamespace(
+        name="TemperStone HQ",
+        channels=[existing_channel],
+        create_text_channel=AsyncMock(side_effect=lambda **kwargs: SimpleNamespace(**kwargs)),
+        create_category=AsyncMock(),
+    )
+    client = SimpleNamespace(
+        guilds=[guild],
+        get_guild=lambda guild_id: guild if guild_id == 123456789012345678 else None,
+        get_channel=lambda channel_id: None,
+        fetch_channel=AsyncMock(return_value=None),
+    )
+
+    adapter = object.__new__(DiscordAdapter)
+    adapter.platform = SimpleNamespace(value="discord")
+    adapter.config = PlatformConfig(
+        enabled=True,
+        token="fake-token",
+        extra={
+            "bootstrap_guild_id": "123456789012345678",
+            "bootstrap_channels": [
+                {"name": "01-전략", "topic": "전사 전략, 우선순위, 큰 방향, 핵심 베팅"},
+            ],
+        },
+    )
+    adapter._client = client
+
+    await adapter._bootstrap_workspace_channels()
+
+    existing_channel.edit.assert_awaited_once()
+    assert existing_channel.edit.await_args.kwargs["topic"] == "전사 전략, 우선순위, 큰 방향, 핵심 베팅"
+    guild.create_text_channel.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_workspace_channels_creates_missing_channels(monkeypatch):
+    """DiscordAdapter should create missing workspace channels and leave existing ones intact."""
+    from gateway.platforms.discord import DiscordAdapter
+
+    existing_channel = SimpleNamespace(name="01-전략")
+    guild = SimpleNamespace(
+        name="TemperStone HQ",
+        channels=[existing_channel],
+        create_text_channel=AsyncMock(side_effect=lambda **kwargs: SimpleNamespace(**kwargs)),
+        create_category=AsyncMock(),
+    )
+    client = SimpleNamespace(
+        guilds=[guild],
+        get_guild=lambda guild_id: guild if guild_id == 123456789012345678 else None,
+        get_channel=lambda channel_id: None,
+        fetch_channel=AsyncMock(return_value=None),
+    )
+
+    adapter = object.__new__(DiscordAdapter)
+    adapter.platform = SimpleNamespace(value="discord")
+    adapter.config = PlatformConfig(
+        enabled=True,
+        token="fake-token",
+        extra={
+            "bootstrap_guild_id": "123456789012345678",
+            "bootstrap_channels": [
+                "01-전략",
+                "02-개인사업자-운영",
+                {"name": "05-운영", "topic": "Hermes operations"},
+            ],
+        },
+    )
+    adapter._client = client
+
+    await adapter._bootstrap_workspace_channels()
+
+    assert guild.create_text_channel.await_count == 2
+    created_names = [call.kwargs["name"] for call in guild.create_text_channel.await_args_list]
+    assert created_names == ["02-개인사업자-운영", "05-운영"]
+    assert guild.create_text_channel.await_args_list[1].kwargs["topic"] == "Hermes operations"
+    guild.create_category.assert_not_awaited()
+
+
 def test_config_env_var_takes_precedence(monkeypatch, tmp_path):
     """Env vars should take precedence over config.yaml values."""
     import yaml

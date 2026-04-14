@@ -147,6 +147,20 @@ async def test_non_ignored_channel_processes_normally(adapter, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_allowed_channel_name_matches_without_id(adapter, monkeypatch):
+    """allowed_channels should accept channel names as well as IDs."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+    monkeypatch.setenv("DISCORD_ALLOWED_CHANNELS", "01-전략")
+    monkeypatch.delenv("DISCORD_IGNORED_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+
+    message = make_message(channel=FakeTextChannel(channel_id=700, name="01-전략"), content="hello")
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_ignored_channels_csv_parsing(adapter, monkeypatch):
     """Multiple channel IDs are parsed correctly from CSV."""
     monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
@@ -281,7 +295,53 @@ async def test_no_thread_with_auto_thread_disabled_is_noop(adapter, monkeypatch)
     adapter.handle_message.assert_awaited_once()
 
 
-# ── config.py bridging ───────────────────────────────────────────────
+@pytest.mark.asyncio
+async def test_allowed_channels_support_channel_names(adapter, monkeypatch):
+    """allowed_channels should accept channel names, not just numeric IDs."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+    monkeypatch.setenv("DISCORD_ALLOWED_CHANNELS", "02-제품")
+    monkeypatch.delenv("DISCORD_IGNORED_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_NO_THREAD_CHANNELS", raising=False)
+
+    message = make_message(channel=FakeTextChannel(channel_id=900, name="02-제품"), content="hello")
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_free_response_channels_support_channel_names(adapter, monkeypatch):
+    """free_response_channels should accept channel names for mention-free routing."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_FREE_RESPONSE_CHANNELS", "01-전략")
+    monkeypatch.delenv("DISCORD_ALLOWED_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_IGNORED_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_NO_THREAD_CHANNELS", raising=False)
+
+    message = make_message(channel=FakeTextChannel(channel_id=901, name="01-전략"), content="hello")
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_no_thread_channels_support_channel_names(adapter, monkeypatch):
+    """no_thread_channels should accept channel names and skip auto-threading."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+    monkeypatch.setenv("DISCORD_NO_THREAD_CHANNELS", "05-운영")
+    monkeypatch.delenv("DISCORD_AUTO_THREAD", raising=False)
+    monkeypatch.delenv("DISCORD_ALLOWED_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_IGNORED_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+
+    adapter._auto_create_thread = AsyncMock(return_value=FakeThread(channel_id=999))
+
+    message = make_message(channel=FakeTextChannel(channel_id=902, name="05-운영"), content="hello")
+    await adapter._handle_message(message)
+
+    adapter._auto_create_thread.assert_not_awaited()
+    adapter.handle_message.assert_awaited_once()
 
 
 def test_config_bridges_ignored_channels(monkeypatch, tmp_path):
@@ -322,6 +382,30 @@ def test_config_bridges_no_thread_channels(monkeypatch, tmp_path):
 
     import os
     assert os.getenv("DISCORD_NO_THREAD_CHANNELS") == "333"
+
+
+def test_config_bridges_channel_skill_bindings_into_discord_extra(monkeypatch, tmp_path):
+    """gateway/config.py should preserve discord.channel_skill_bindings for auto-loading skills."""
+    import yaml
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(yaml.dump({
+        "discord": {
+            "channel_skill_bindings": [
+                {"id": "111", "skills": ["bd-intake"]},
+                {"id": "222", "skill": "bd-review"},
+            ],
+        },
+    }))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    from gateway.config import Platform, load_gateway_config
+
+    config = load_gateway_config()
+    discord_extra = config.platforms[Platform.DISCORD].extra
+    assert discord_extra.get("channel_skill_bindings") == [
+        {"id": "111", "skills": ["bd-intake"]},
+        {"id": "222", "skill": "bd-review"},
+    ]
 
 
 def test_config_env_var_takes_precedence(monkeypatch, tmp_path):

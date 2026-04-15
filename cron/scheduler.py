@@ -221,6 +221,39 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
     chat_id = target["chat_id"]
     thread_id = target.get("thread_id")
 
+    task_name = job.get("name", job["id"])
+    create_new_thread = bool(job.get("discord_new_thread_per_delivery")) and platform_name == "discord"
+    thread_name = None
+    if create_new_thread:
+        now = _hermes_now()
+        template = str(job.get("discord_thread_name_template") or "").strip()
+        if template:
+            thread_vars = {
+                "job_id": job.get("id", ""),
+                "job_name": task_name,
+                "task_name": task_name,
+                "year": now.year,
+                "month": now.month,
+                "day": now.day,
+                "date_kst": f"{now.year}/{now.month}/{now.day}",
+                "date_iso": now.strftime("%Y-%m-%d"),
+                "date_compact": now.strftime("%Y%m%d"),
+                "time_kst": now.strftime("%H:%M"),
+                "time_compact": now.strftime("%H%M"),
+            }
+            try:
+                thread_name = template.format(**thread_vars).strip()
+            except Exception as template_error:
+                logger.warning(
+                    "Job '%s': invalid discord_thread_name_template %r (%s); using default thread name",
+                    job.get("id", "?"),
+                    template,
+                    template_error,
+                )
+                thread_name = None
+        if not thread_name:
+            thread_name = f"{task_name.replace('-', ' ')} — {now.strftime('%Y-%m-%d %H%M')}"
+
     # Diagnostic: log thread_id for topic-aware delivery debugging
     origin = job.get("origin") or {}
     origin_thread = origin.get("thread_id")
@@ -309,6 +342,13 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
     runtime_adapter = (adapters or {}).get(platform)
     if runtime_adapter is not None and loop is not None and getattr(loop, "is_running", lambda: False)():
         send_metadata = {"thread_id": thread_id} if thread_id else None
+        if create_new_thread:
+            send_metadata = {
+                **(send_metadata or {}),
+                "create_new_thread": True,
+                "thread_name": thread_name,
+                "auto_archive_duration": 1440,
+            }
         try:
             # Send cleaned text (MEDIA tags stripped) — not the raw content
             text_to_send = cleaned_delivery_content.strip()
@@ -341,7 +381,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
             )
 
     # Standalone path: run the async send in a fresh event loop (safe from any thread)
-    coro = _send_to_platform(platform, pconfig, chat_id, cleaned_delivery_content, thread_id=thread_id, media_files=media_files)
+    coro = _send_to_platform(platform, pconfig, chat_id, cleaned_delivery_content, thread_id=thread_id, media_files=media_files, create_new_thread=create_new_thread, thread_name=thread_name)
     try:
         result = asyncio.run(coro)
     except RuntimeError:
@@ -352,7 +392,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         coro.close()
         import concurrent.futures
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-            future = pool.submit(asyncio.run, _send_to_platform(platform, pconfig, chat_id, cleaned_delivery_content, thread_id=thread_id, media_files=media_files))
+            future = pool.submit(asyncio.run, _send_to_platform(platform, pconfig, chat_id, cleaned_delivery_content, thread_id=thread_id, media_files=media_files, create_new_thread=create_new_thread, thread_name=thread_name))
             result = future.result(timeout=30)
     except Exception as e:
         msg = f"delivery to {platform_name}:{chat_id} failed: {e}"

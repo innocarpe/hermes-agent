@@ -914,6 +914,38 @@ class DiscordAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
 
         try:
+            # Support fresh-thread delivery for cron jobs / reports.
+            if metadata and metadata.get("create_new_thread"):
+                source_id = str((metadata.get("thread_id") or chat_id) or "")
+                source_channel = self._client.get_channel(int(source_id))
+                if not source_channel:
+                    source_channel = await self._client.fetch_channel(int(source_id))
+                if not source_channel:
+                    return SendResult(success=False, error=f"Channel {source_id} not found")
+
+                parent_channel = getattr(source_channel, "parent", None) or source_channel
+                thread_name = str(metadata.get("thread_name") or "Hermes Report").strip() or "Hermes Report"
+                auto_archive_duration = int(metadata.get("auto_archive_duration", 1440) or 1440)
+
+                class _CronInteraction:
+                    def __init__(self, channel, display_name: str):
+                        self.channel = channel
+                        self.user = type("User", (), {"display_name": display_name})()
+
+                result = await self._create_thread(
+                    _CronInteraction(parent_channel, "Hermes Cron"),
+                    name=thread_name,
+                    message=content,
+                    auto_archive_duration=auto_archive_duration,
+                )
+                if not result.get("success"):
+                    return SendResult(success=False, error=result.get("error", "unknown error"))
+                return SendResult(
+                    success=True,
+                    message_id=result.get("thread_id"),
+                    raw_response=result,
+                )
+
             # Determine target channel: thread_id in metadata takes precedence.
             thread_id = None
             if metadata and metadata.get("thread_id"):
@@ -1766,8 +1798,68 @@ class DiscordAdapter(BasePlatformAdapter):
 
         Discord uses its own markdown variant.
         """
-        # Discord markdown is fairly standard, no special escaping needed
-        return content
+        if not content:
+            return content
+
+        def _is_table_separator(line: str) -> bool:
+            stripped = line.strip()
+            return bool(stripped) and all(ch in "|-: " for ch in stripped)
+
+        def _render_table_block(block_lines: list[str]) -> list[str]:
+            rows: list[list[str]] = []
+            for raw_line in block_lines:
+                stripped = raw_line.strip()
+                if not stripped or _is_table_separator(raw_line):
+                    continue
+                if stripped.startswith("|") and stripped.endswith("|"):
+                    cells = [cell.strip() for cell in stripped.strip("|").split("|")]
+                else:
+                    cells = [part.strip() for part in stripped.split("|")]
+                cells = [cell for cell in cells if cell]
+                if cells:
+                    rows.append(cells)
+
+            if not rows:
+                return block_lines
+
+            rendered: list[str] = []
+            data_rows = rows[1:] if len(rows) > 1 else rows
+            for row in data_rows:
+                label = row[0]
+                rest = " · ".join(cell for cell in row[1:] if cell)
+                rendered.append(f"• **{label}**" + (f" — {rest}" if rest else ""))
+            return rendered
+
+        out_lines: list[str] = []
+        current_table: list[str] = []
+
+        def flush_table() -> None:
+            nonlocal current_table
+            if not current_table:
+                return
+            out_lines.extend(_render_table_block(current_table))
+            current_table = []
+
+        for raw_line in content.replace("\r\n", "\n").split("\n"):
+            stripped = raw_line.strip()
+
+            if stripped.startswith("|") and "|" in stripped[1:]:
+                current_table.append(raw_line)
+                continue
+
+            flush_table()
+
+            heading = re.match(r"^(#{1,6})\s+(.*)$", raw_line)
+            if heading:
+                out_lines.append(f"**{heading.group(2).strip()}**")
+                continue
+
+            out_lines.append(raw_line)
+
+        flush_table()
+
+        formatted = "\n".join(out_lines).strip()
+        return formatted
 
     async def _run_simple_slash(
         self,
@@ -2316,7 +2408,10 @@ class DiscordAdapter(BasePlatformAdapter):
                 reason=reason,
             )
             if starter_message:
-                await thread.send(starter_message)
+                from gateway.platforms.base import BasePlatformAdapter
+                chunks = BasePlatformAdapter.truncate_message(starter_message, self.MAX_MESSAGE_LENGTH)
+                for chunk in chunks:
+                    await thread.send(chunk)
             return {
                 "success": True,
                 "thread_id": str(thread.id),
@@ -2324,13 +2419,27 @@ class DiscordAdapter(BasePlatformAdapter):
             }
         except Exception as direct_error:
             try:
-                seed_content = starter_message or f"\U0001f9f5 Thread created by Hermes: **{name}**"
+                # Use a neutral seed message only as the anchor for thread creation.
+                # The actual report must still be posted into the thread, otherwise the
+                # thread can appear "empty" even though creation technically succeeded.
+                seed_content = f"\U0001f9f5 Thread created by Hermes: **{name}**"
                 seed_msg = await parent_channel.send(seed_content)
                 thread = await seed_msg.create_thread(
                     name=name,
                     auto_archive_duration=auto_archive_duration,
                     reason=reason,
                 )
+                if starter_message:
+                    from gateway.platforms.base import BasePlatformAdapter
+                    chunks = BasePlatformAdapter.truncate_message(starter_message, self.MAX_MESSAGE_LENGTH)
+                    join = getattr(thread, "join", None)
+                    if callable(join):
+                        try:
+                            await join()
+                        except Exception:
+                            pass
+                    for chunk in chunks:
+                        await thread.send(chunk)
                 return {
                     "success": True,
                     "thread_id": str(thread.id),

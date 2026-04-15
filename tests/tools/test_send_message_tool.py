@@ -64,7 +64,7 @@ def _ensure_slack_mock(monkeypatch):
 
 
 class TestSendMessageTool:
-    def test_cron_duplicate_target_is_skipped_and_explained(self):
+    def test_cron_auto_delivery_target_still_sends(self):
         home = SimpleNamespace(chat_id="-1001")
         config, _telegram_cfg = _make_config()
         config.get_home_channel = lambda _platform: home
@@ -80,7 +80,7 @@ class TestSendMessageTool:
              patch("gateway.config.load_gateway_config", return_value=config), \
              patch("tools.interrupt.is_interrupted", return_value=False), \
              patch("model_tools._run_async", side_effect=_run_async_immediately), \
-             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True, "message_id": "123"})) as send_mock, \
              patch("gateway.mirror.mirror_to_session", return_value=True) as mirror_mock:
             result = json.loads(
                 send_message_tool(
@@ -93,11 +93,9 @@ class TestSendMessageTool:
             )
 
         assert result["success"] is True
-        assert result["skipped"] is True
-        assert result["reason"] == "cron_auto_delivery_duplicate_target"
-        assert "final response" in result["note"]
-        send_mock.assert_not_awaited()
-        mirror_mock.assert_not_called()
+        assert "skipped" not in result
+        send_mock.assert_awaited_once()
+        mirror_mock.assert_called_once()
 
     def test_cron_different_target_still_sends(self):
         config, telegram_cfg = _make_config()
@@ -465,6 +463,40 @@ class TestSendToPlatformChunking:
         assert send.await_count >= 3
         for call in send.await_args_list:
             assert len(call.args[2]) <= 2020  # each chunk fits the limit
+
+    def test_discord_fresh_thread_reuses_single_thread_for_chunked_message(self):
+        """Chunked fresh-thread delivery should create exactly one thread."""
+        send = AsyncMock(
+            side_effect=[
+                {"success": True, "platform": "discord", "thread_id": "thread123", "message_id": "m1"},
+                {"success": True, "platform": "discord", "chat_id": "ch", "message_id": "m2"},
+                {"success": True, "platform": "discord", "chat_id": "ch", "message_id": "m3"},
+            ]
+        )
+        long_msg = "word " * 1000
+        with patch("tools.send_message_tool._send_discord", send):
+            result = asyncio.run(
+                _send_to_platform(
+                    Platform.DISCORD,
+                    SimpleNamespace(enabled=True, token="***", extra={}),
+                    "1493267598597558334",
+                    long_msg,
+                    thread_id="1493466324209242283",
+                    create_new_thread=True,
+                    thread_name="Youtube 2026/4/14 벤치마크",
+                )
+            )
+
+        assert result["success"] is True
+        assert send.await_count == 3
+        first_call = send.await_args_list[0]
+        assert first_call.kwargs["create_new_thread"] is True
+        assert first_call.kwargs["thread_id"] == "1493466324209242283"
+        second_call = send.await_args_list[1]
+        assert second_call.kwargs["create_new_thread"] is False
+        assert second_call.kwargs["thread_id"] == "thread123"
+        third_call = send.await_args_list[2]
+        assert third_call.kwargs["thread_id"] == "thread123"
 
     def test_slack_messages_are_formatted_before_send(self, monkeypatch):
         _ensure_slack_mock(monkeypatch)
@@ -962,6 +994,59 @@ class TestSendDiscordThreadId:
         assert result["success"] is True
         assert result["message_id"] == "9876543210"
         assert result["chat_id"] == "111"
+
+    def test_create_new_thread_keeps_seed_message_visible(self):
+        """Fresh-thread creation should keep the visible starter message in the parent channel."""
+        seed_resp = MagicMock()
+        seed_resp.status = 200
+        seed_resp.json = AsyncMock(return_value={"id": "seed123"})
+        seed_resp.text = AsyncMock(return_value="seed ok")
+        seed_resp.__aenter__ = AsyncMock(return_value=seed_resp)
+        seed_resp.__aexit__ = AsyncMock(return_value=None)
+
+        thread_resp = MagicMock()
+        thread_resp.status = 200
+        thread_resp.json = AsyncMock(return_value={"id": "thread123"})
+        thread_resp.text = AsyncMock(return_value="thread ok")
+        thread_resp.__aenter__ = AsyncMock(return_value=thread_resp)
+        thread_resp.__aexit__ = AsyncMock(return_value=None)
+
+        post_resp = MagicMock()
+        post_resp.status = 200
+        post_resp.json = AsyncMock(return_value={"id": "msg123"})
+        post_resp.text = AsyncMock(return_value="msg ok")
+        post_resp.__aenter__ = AsyncMock(return_value=post_resp)
+        post_resp.__aexit__ = AsyncMock(return_value=None)
+
+        mock_session = MagicMock()
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=None)
+        mock_session.get = MagicMock(return_value=seed_resp)
+        mock_session.post = AsyncMock(side_effect=[seed_resp, thread_resp, post_resp])
+        mock_session.delete = MagicMock()
+
+        mock_ctx = MagicMock()
+        mock_ctx.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_ctx.__aexit__ = AsyncMock(return_value=None)
+
+        with patch("aiohttp.ClientSession", return_value=mock_ctx):
+            result = asyncio.run(
+                _send_discord(
+                    "tok",
+                    "1493267598597558334",
+                    "benchmark summary",
+                    thread_id="1493466324209242283",
+                    create_new_thread=True,
+                    thread_name="daily youtube benchmark — 2026-04-14",
+                    auto_archive_duration=1440,
+                )
+            )
+
+        assert result["success"] is True
+        assert result["thread_id"] == "thread123"
+        mock_session.delete.assert_not_called()
+        assert mock_session.post.await_args_list[0].kwargs["json"]["content"] == "daily youtube benchmark — 2026-04-14"
+        assert mock_session.post.await_args_list[2].kwargs["json"]["content"] == "benchmark summary"
 
     def test_error_status_returns_error_dict(self):
         """Non-200/201 responses return an error dict."""

@@ -78,6 +78,14 @@ def adapter(monkeypatch):
     monkeypatch.setattr(discord_platform.discord, "DMChannel", FakeDMChannel, raising=False)
     monkeypatch.setattr(discord_platform.discord, "Thread", FakeThread, raising=False)
 
+    # Keep these tests isolated from the shell/profile environment.
+    monkeypatch.delenv("DISCORD_ALLOWED_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_IGNORED_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_REQUIRE_MENTION", raising=False)
+    monkeypatch.delenv("DISCORD_NO_THREAD_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_AUTO_THREAD", raising=False)
+
     config = PlatformConfig(enabled=True, token="fake-token")
     adapter = DiscordAdapter(config)
     adapter._client = SimpleNamespace(user=SimpleNamespace(id=999))
@@ -293,6 +301,22 @@ async def test_no_thread_with_auto_thread_disabled_is_noop(adapter, monkeypatch)
 
     adapter._auto_create_thread.assert_not_awaited()
     adapter.handle_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_auto_create_thread_reuses_existing_thread_on_duplicate(adapter, monkeypatch):
+    """If Discord already created the thread, reuse it instead of falling back to parent chat."""
+    parent = FakeTextChannel(channel_id=800, name="thread-collector-hermes")
+    existing_thread = FakeThread(channel_id=999, name="thread-collector-hermes-thread", parent=parent)
+    existing_thread.starter_message_id = 123
+    parent.threads = [existing_thread]
+
+    message = make_message(channel=parent, content="hello")
+    message.create_thread = AsyncMock(side_effect=Exception("400 Bad Request (error code: 160004): A thread has already been created for this message"))
+
+    reused = await adapter._auto_create_thread(message)
+
+    assert reused is existing_thread
 
 
 @pytest.mark.asyncio

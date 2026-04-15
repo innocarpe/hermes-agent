@@ -135,6 +135,45 @@ class TestSendMessageTool:
         )
         mirror_mock.assert_called_once_with("telegram", "-1002", "hello", source_label="cli", thread_id=None)
 
+    def test_discord_create_new_thread_flags_are_forwarded(self):
+        """send_message_tool should forward fresh-thread options to the platform sender."""
+        config = SimpleNamespace(
+            platforms={Platform.DISCORD: SimpleNamespace(enabled=True, token="tok", extra={})},
+            get_home_channel=lambda _platform: None,
+        )
+        send_mock = AsyncMock(return_value={"success": True, "platform": "discord", "thread_id": "t1", "message_id": "m1"})
+
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("tools.send_message_tool._send_to_platform", send_mock), \
+             patch("gateway.mirror.mirror_to_session", return_value=True):
+            result = json.loads(
+                send_message_tool(
+                    {
+                        "action": "send",
+                        "target": "discord:1493267598597558334",
+                        "message": "benchmark body",
+                        "create_new_thread": True,
+                        "thread_name": "Youtube 2026-04-15 벤치마크 · 검증",
+                        "auto_archive_duration": 60,
+                    }
+                )
+            )
+
+        assert result["success"] is True
+        send_mock.assert_awaited_once_with(
+            Platform.DISCORD,
+            config.platforms[Platform.DISCORD],
+            "1493267598597558334",
+            "benchmark body",
+            thread_id=None,
+            media_files=[],
+            create_new_thread=True,
+            thread_name="Youtube 2026-04-15 벤치마크 · 검증",
+            auto_archive_duration=60,
+        )
+
     def test_cron_same_chat_different_thread_still_sends(self):
         config, telegram_cfg = _make_config()
 

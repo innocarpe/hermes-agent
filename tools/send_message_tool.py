@@ -257,6 +257,17 @@ def _handle_send(args):
     except Exception:
         auto_archive_duration = 1440
 
+    send_kwargs = {
+        "thread_id": thread_id,
+        "media_files": media_files,
+    }
+    if create_new_thread:
+        send_kwargs["create_new_thread"] = True
+    if thread_name:
+        send_kwargs["thread_name"] = thread_name
+    if auto_archive_duration != 1440:
+        send_kwargs["auto_archive_duration"] = auto_archive_duration
+
     try:
         from model_tools import _run_async
         result = _run_async(
@@ -265,8 +276,7 @@ def _handle_send(args):
                 pconfig,
                 chat_id,
                 cleaned_message,
-                thread_id=thread_id,
-                media_files=media_files,
+                **send_kwargs,
             )
         )
         if used_home_channel and isinstance(result, dict) and result.get("success"):

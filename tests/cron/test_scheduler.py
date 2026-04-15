@@ -574,10 +574,45 @@ class TestDeliverResultWrapping:
         with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
              patch("cron.scheduler._hermes_now", return_value=fixed_now), \
              patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock:
-            _deliver_result(job, "Today\'s benchmark report")
+            _deliver_result(job, "Today's benchmark report")
 
         send_mock.assert_called_once()
         assert send_mock.call_args.kwargs["thread_name"] == "Youtube 2026/4/14 벤치마크 · 0800"
+
+    def test_discord_delivery_can_use_report_file_body_template(self, tmp_path):
+        """Discord cron delivery can send the saved report body instead of a short summary."""
+        from gateway.config import Platform
+
+        report_path = tmp_path / "03-콘텐츠" / "메트릭" / "벤치마킹-2026-04-15.md"
+        report_path.parent.mkdir(parents=True)
+        report_path.write_text("# full report body\n\nThis is the Discord payload.", encoding="utf-8")
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.DISCORD: pconfig}
+
+        job = {
+            "id": "test-job",
+            "name": "daily-youtube-benchmark",
+            "deliver": "origin",
+            "delivery_body_file_template": "03-콘텐츠/메트릭/벤치마킹-{date_iso}.md",
+            "origin": {
+                "platform": "discord",
+                "chat_id": "1493169190197268510",
+                "thread_id": None,
+            },
+        }
+
+        fixed_now = datetime(2026, 4, 15, 8, 0, 0)
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler._hermes_now", return_value=fixed_now), \
+             patch("cron.scheduler._get_repo_root", return_value=tmp_path), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock:
+            _deliver_result(job, "This short response should not be delivered.")
+
+        send_mock.assert_called_once()
+        assert send_mock.call_args.args[3] == "# full report body\n\nThis is the Discord payload."
 
 
 class TestDeliverResultErrorReturns:
@@ -1320,6 +1355,12 @@ class TestBuildJobPromptMissingSkill:
 
 class TestTickAdvanceBeforeRun:
     """Verify that tick() calls advance_next_run before run_job for crash safety."""
+
+    @pytest.fixture(autouse=True)
+    def _disable_tick_lock(self):
+        # xdist runs cron tests in parallel, so avoid real file-lock contention.
+        with patch("cron.scheduler.fcntl.flock", return_value=None):
+            yield
 
     def test_advance_called_before_run_job(self, tmp_path):
         """advance_next_run must be called before run_job to prevent crash-loop re-fires."""

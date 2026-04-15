@@ -76,6 +76,31 @@ def _resolve_origin(job: dict) -> Optional[dict]:
     return None
 
 
+def _get_repo_root() -> Path:
+    """Return the repository root for the current Hermes checkout."""
+    return Path(__file__).resolve().parents[1]
+
+
+def _format_cron_template(template: str, job: dict) -> str:
+    """Format a cron job template with KST date/time variables."""
+    now = _hermes_now()
+    task_name = job.get("name", job.get("id", ""))
+    thread_vars = {
+        "job_id": job.get("id", ""),
+        "job_name": task_name,
+        "task_name": task_name,
+        "year": now.year,
+        "month": now.month,
+        "day": now.day,
+        "date_kst": f"{now.year}/{now.month}/{now.day}",
+        "date_iso": now.strftime("%Y-%m-%d"),
+        "date_compact": now.strftime("%Y%m%d"),
+        "time_kst": now.strftime("%H:%M"),
+        "time_compact": now.strftime("%H%M"),
+    }
+    return template.format(**thread_vars).strip()
+
+
 def _resolve_delivery_target(job: dict) -> Optional[dict]:
     """Resolve the concrete auto-delivery target for a cron job, if any."""
     deliver = job.get("deliver", "local")
@@ -332,6 +357,33 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         )
     else:
         delivery_content = content
+
+    report_template = str(
+        job.get("delivery_body_file_template")
+        or job.get("discord_delivery_body_file_template")
+        or ""
+    ).strip()
+    if report_template:
+        try:
+            report_path = _format_cron_template(report_template, job)
+            resolved_path = Path(report_path)
+            if not resolved_path.is_absolute():
+                resolved_path = _get_repo_root() / resolved_path
+            if resolved_path.exists():
+                delivery_content = resolved_path.read_text(encoding="utf-8")
+            else:
+                logger.warning(
+                    "Job '%s': delivery body template resolved to missing file %s; using final response",
+                    job["id"],
+                    resolved_path,
+                )
+        except Exception as e:
+            logger.warning(
+                "Job '%s': failed to resolve delivery body template %r (%s); using final response",
+                job["id"],
+                report_template,
+                e,
+            )
 
     # Extract MEDIA: tags so attachments are forwarded as files, not raw text
     from gateway.platforms.base import BasePlatformAdapter

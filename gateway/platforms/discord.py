@@ -2461,6 +2461,9 @@ class DiscordAdapter(BasePlatformAdapter):
         """Create a thread from a user message for auto-threading.
 
         Returns the created thread object, or ``None`` on failure.
+        If Discord says a thread already exists for the message, try to
+        recover the existing thread instead of falling back to the parent
+        channel — that fallback causes duplicate parent-channel replies.
         """
         # Build a short thread name from the message
         content = (message.content or "").strip()
@@ -2468,11 +2471,38 @@ class DiscordAdapter(BasePlatformAdapter):
         if len(content) > 80:
             thread_name = thread_name[:77] + "..."
 
+        async def _find_existing_thread() -> Optional[Any]:
+            parent_channel = getattr(message, "channel", None)
+            if parent_channel is None:
+                return None
+            candidate_threads = list(getattr(parent_channel, "threads", []) or [])
+            for thread in candidate_threads:
+                try:
+                    starter_id = getattr(thread, "starter_message_id", None)
+                    if starter_id is not None and str(starter_id) == str(message.id):
+                        return thread
+                    starter = getattr(thread, "starter_message", None)
+                    if starter is not None and str(getattr(starter, "id", "")) == str(message.id):
+                        return thread
+                except Exception:
+                    continue
+            return None
+
         try:
             thread = await message.create_thread(name=thread_name, auto_archive_duration=1440)
             return thread
         except Exception as e:
             logger.warning("[%s] Auto-thread creation failed: %s", self.name, e)
+            if "A thread has already been created for this message" in str(e):
+                existing_thread = await _find_existing_thread()
+                if existing_thread is not None:
+                    logger.debug(
+                        "[%s] Reusing existing thread %s for message %s",
+                        self.name,
+                        getattr(existing_thread, "id", "unknown"),
+                        getattr(message, "id", "unknown"),
+                    )
+                    return existing_thread
             return None
 
     async def send_exec_approval(

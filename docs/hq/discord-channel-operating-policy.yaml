@@ -31,7 +31,7 @@ policy:
 
     - name: "04-채널"
       mode: "free_response"
-      thread_policy: "auto_thread"
+      thread_policy: "no_thread"
       notes: "Discord / Telegram / platform operations"
 
     - name: "05-운영"
@@ -42,7 +42,7 @@ policy:
     - name: "06-재무"
       mode: "free_response"
       thread_policy: "no_thread"
-      notes: "Finance, cashflow, accounting, decisions"
+      notes: "Finance lane: cashflow, revenue/cost, settlement, accounting, tax, budgeting, margin, and profitability."
 
     - name: "07-회고"
       mode: "free_response"
@@ -61,6 +61,7 @@ policy:
 
   defaults:
     allowed_channels:
+      - "01-전략"
       - "02-개인사업자-운영"
       - "02-제품"
       - "03-콘텐츠"
@@ -69,10 +70,19 @@ policy:
       - "06-재무"
       - "07-회고"
       - "08-브랜딩"
+      - "09-아카이브"
 
     free_response_channels:
       - "01-전략"
+      - "02-개인사업자-운영"
+      - "02-제품"
+      - "03-콘텐츠"
+      - "04-채널"
+      - "05-운영"
+      - "06-재무"
       - "07-회고"
+      - "08-브랜딩"
+      - "09-아카이브"
 
     no_thread_channels:
       - "01-전략"

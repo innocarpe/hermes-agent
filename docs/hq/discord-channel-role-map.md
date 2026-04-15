@@ -13,16 +13,16 @@ This document is the practical operating map for the current Discord workspace.
 
 | Channel | Role | Topic / description | Mention policy | Thread policy | Primary use |
 | --- | --- | --- | --- | --- | --- |
-| `01-전략` | Strategy intake + direction | High-level direction, priority setting, major bets | `free_response` | `no_thread` | High-level direction, priority setting, major bets |
-| `02-개인사업자-운영` | Owner operations | Business admin, process, and owner decisions | `free_response` | `auto_thread` | Business admin, process, owner decisions |
-| `02-제품` | Product work | Product scope, roadmap, delivery, and review | `mention_gated` | `auto_thread` | Product scope, roadmap, delivery, review |
-| `03-콘텐츠` | Content work | Drafts, publishing, feedback, and content ops | `free_response` | `auto_thread` | Drafts, publishing, feedback, and content ops |
-| `04-채널` | Channel operations | Discord, Telegram, and platform operations | `mention_gated` | `no_thread` | Discord/Telegram/platform ops, channel structure |
+|| `01-전략` | Strategy intake + discovery | High-level direction, priority setting, major bets, and market discovery requests | `free_response` | `no_thread` | High-level direction, priority setting, major bets, and market discovery requests |
+|| `02-개인사업자-운영` | Owner operations | Business admin, process, and owner decisions | `free_response` | `auto_thread` | Business admin, process, and owner decisions |
+|| `02-제품` | Product work | Product scope, roadmap, delivery, and review | `free_response` | `auto_thread` | Product scope, roadmap, delivery, review |
+|| `03-콘텐츠` | Content work | Drafts, publishing, feedback, and content ops | `free_response` | `auto_thread` | Drafts, publishing, feedback, and content ops |
+|| `04-채널` | Content channel strategy + distribution | Channel/account architecture, platform strategy, distribution planning for content business | `free_response` | `no_thread` | Channel/account architecture, platform strategy, distribution planning for content business |
 | `05-운영` | Operations | Automation, service health, workflows, and routing | `free_response` | `auto_thread` | Automation, service health, workflows, and routing |
-| `06-재무` | Finance | Cashflow, accounting, and finance decisions | `mention_gated` | `no_thread` | Cashflow, accounting, and finance decisions |
-| `07-회고` | Review / retrospective | Retrospectives, lessons learned, and system review | `free_response` | `no_thread` | Retrospectives, lessons learned, and system review |
-| `08-브랜딩` | Branding | Tone, naming, public presence, and presentation | `mention_gated` | `auto_thread` | Tone, naming, public presence, and presentation |
-| `09-아카이브` | Archive | Closed items, historical record, and resolved threads | `read_only` | `no_thread` | Closed items, historical record, and resolved threads |
+| `06-재무` | Finance | Cashflow, accounting, and finance decisions | `free_response` | `no_thread` | Cashflow, accounting, and finance decisions |
+| `07-회고` | Review / retrospective | Repository/workflow retrospectives, decision review, and improvement actions | `free_response` | `no_thread` | Review completed work, extract lessons, and define next improvement actions |
+|| `08-브랜딩` | Branding | Hermes / TemperStone HQ branding, tone, naming, intro copy, and public presence | `free_response` | `auto_thread` | Tone, naming, public presence, and presentation |
+| `09-아카이브` | Archive | Closed items, historical record, and resolved threads | `free_response` | `no_thread` | Closed items, historical record, and resolved threads |
 
 ## Current recommended routing controls
 
@@ -38,15 +38,21 @@ Use names directly in `allowed_channels`:
 - `06-재무`
 - `07-회고`
 - `08-브랜딩`
+- `09-아카이브`
 
 ### Free-response channels
 Use names directly in `free_response_channels`:
 
 - `01-전략`
 - `02-개인사업자-운영`
+- `02-제품`
 - `03-콘텐츠`
+- `04-채널`
 - `05-운영`
+- `06-재무`
 - `07-회고`
+- `08-브랜딩`
+- `09-아카이브`
 
 ### No-thread channels
 Use names directly in `no_thread_channels`:
@@ -63,7 +69,7 @@ Recommended baseline bindings:
 
 - `01-전략` → `bd-intake`
 - `02-제품` → `bd-review`
-- `04-채널` → `hq-ops`
+- `04-채널` → no default binding; add a dedicated channel-workflow skill only when the workflow stabilizes
 - `05-운영` → `hq-ops`
 - `06-재무` → `finance-review`
 - `07-회고` → `review-loop`
@@ -89,6 +95,12 @@ When you add a new channel:
 - Structural/system work goes to `04-채널`.
 - Financial work goes to `06-재무`.
 - Review and closure go to `07-회고` and `09-아카이브`.
+
+## Channel split rule
+
+- Use `04-채널` when the task is about where the work should live, how it should route, or how the channel stack should be organized.
+- Use `05-운영` when the task is about runtime behavior, automation, incidents, recovery, or verification.
+- If the message contains both, answer the routing/structure part in `04-채널` and the execution/incident part in `05-운영`.
 
 ## Notes
 

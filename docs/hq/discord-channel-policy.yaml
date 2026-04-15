@@ -5,6 +5,8 @@
 
 # Whitelist: channels Hermes is allowed to respond in.
 # Use the channel names directly if you do not want to copy IDs yet.
+# Market discovery / research intake should go to `01-전략`.
+# Content-business channel strategy/distribution should go to `04-채널`.
 allowed_channels:
   - "01-전략"
   - "02-개인사업자-운영"
@@ -33,8 +35,8 @@ free_response_channels:
 
 # Channels where Hermes should reply directly and avoid creating a thread.
 # Good candidates for summary-only or administrative surfaces.
+# `04-채널` is intentionally *not* listed here so it can auto-thread by topic.
 no_thread_channels:
-  - "04-채널"
   - "06-재무"
   - "07-회고"
   - "09-아카이브"
@@ -58,6 +60,7 @@ channel_skill_bindings:
     skills:
       - "hq-ops"
 
+  # `07-회고` is the review-only lane for completed work, decisions, and improvement actions.
   - id: "07-회고"
     skills:
       - "review-loop"

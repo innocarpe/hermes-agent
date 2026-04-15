@@ -1,5 +1,7 @@
 # First App Revenue Playbook — Market Research Notes
 
+> 참고: 이 문서는 `docs/hq/first-app-strategy-principles.md`와 `docs/hq/first-app-doc-map.md`를 기준으로 읽는 보조 문서다.
+
 ## 질문
 - 실제로 돈을 벌 수 있는가?
 - 실제 유저가 있는가?
@@ -87,6 +89,9 @@ URL:
 ### 추천되는 방향
 - **Android-first specific-job workflow tool**
 - 이유: 실제 수요가 있고, Android의 강점(도달성, 저비용 실험, 장치 접근성)을 활용 가능
+- 다만 범용 유틸리티보다 **반복 비용이 큰 특정 워크플로**에 좁힌다.
+- 수익화는 광고보다 **freemium + Pro unlock** 우선으로 본다.
+- 제품 평가 시 **누가 돈을 내는지**를 먼저 적는다.
 
 ### 피해야 할 방향
 - 범용 계산기

@@ -1,5 +1,7 @@
 # First App Revenue Playbook — Evidence Review
 
+> 아카이브 메모: 이 리뷰는 초기 가설 검토용이다. 최신 판단 기준은 `docs/hq/first-app-strategy-principles.md`를 먼저 보고, 문서 순서는 `docs/hq/first-app-doc-map.md`를 따른다.
+
 ## 목적
 이 문서는 개발자용 “첫 앱 매출 플레이북” 아이디어를 **사업 전략 관점에서 검토**하고, TemperStone HQ 안에서 재사용 가능한 형태로 정리한 리뷰 문서다.
 
@@ -7,6 +9,7 @@
 - **학습용 실험**으로는 좋다.
 - **의미 있는 사업 전략**으로는 약하다.
 - 핵심 문제는 **범용 유틸리티 앱의 포화도**와 **광고 수익만으로는 얇은 경제성**이다.
+- 자세한 판정 기준은 `docs/hq/first-app-strategy-principles.md`를 따른다.
 
 ---
 

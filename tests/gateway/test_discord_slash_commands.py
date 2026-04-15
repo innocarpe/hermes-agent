@@ -83,7 +83,13 @@ class FakeTree:
 
 
 @pytest.fixture
-def adapter():
+def adapter(monkeypatch):
+    # Keep these tests isolated from the shell environment.
+    monkeypatch.delenv("DISCORD_ALLOWED_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_IGNORED_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_NO_THREAD_CHANNELS", raising=False)
+
     config = PlatformConfig(enabled=True, token="***")
     adapter = DiscordAdapter(config)
     adapter._client = SimpleNamespace(
@@ -262,7 +268,7 @@ async def test_handle_thread_create_slash_no_dispatch_without_message(adapter):
 
 @pytest.mark.asyncio
 async def test_handle_thread_create_slash_falls_back_to_seed_message(adapter):
-    created_thread = SimpleNamespace(id=555, name="Planning")
+    created_thread = SimpleNamespace(id=555, name="Planning", send=AsyncMock())
     seed_message = SimpleNamespace(id=777, create_thread=AsyncMock(return_value=created_thread))
     channel = SimpleNamespace(
         create_thread=AsyncMock(side_effect=RuntimeError("direct failed")),
@@ -278,12 +284,13 @@ async def test_handle_thread_create_slash_falls_back_to_seed_message(adapter):
 
     await adapter._handle_thread_create_slash(interaction, "Planning", "Kickoff", 1440)
 
-    channel.send.assert_awaited_once_with("Kickoff")
+    channel.send.assert_awaited_once_with("🧵 Thread created by Hermes: **Planning**")
     seed_message.create_thread.assert_awaited_once_with(
         name="Planning",
         auto_archive_duration=1440,
         reason="Requested by Jezza via /thread",
     )
+    created_thread.send.assert_awaited_once_with("Kickoff")
     interaction.followup.send.assert_awaited()
 
 

@@ -117,6 +117,20 @@ SEND_MESSAGE_SCHEMA = {
             "message": {
                 "type": "string",
                 "description": "The message text to send"
+            },
+            "create_new_thread": {
+                "type": "boolean",
+                "default": False,
+                "description": "Discord only: create a fresh thread for this send instead of posting into the existing target."
+            },
+            "thread_name": {
+                "type": "string",
+                "description": "Discord only: custom thread title to use when create_new_thread is true."
+            },
+            "auto_archive_duration": {
+                "type": "integer",
+                "default": 1440,
+                "description": "Discord only: thread auto-archive duration in minutes when create_new_thread is true."
             }
         },
         "required": []
@@ -235,9 +249,13 @@ def _handle_send(args):
                 f"or set a home channel via: hermes config set {platform_name.upper()}_HOME_CHANNEL <channel_id>"
             })
 
-    duplicate_skip = _maybe_skip_cron_duplicate_send(platform_name, chat_id, thread_id)
-    if duplicate_skip:
-        return json.dumps(duplicate_skip)
+    create_new_thread = bool(args.get("create_new_thread", False))
+    thread_name = args.get("thread_name")
+    auto_archive_duration_raw = args.get("auto_archive_duration", 1440)
+    try:
+        auto_archive_duration = int(auto_archive_duration_raw or 1440)
+    except Exception:
+        auto_archive_duration = 1440
 
     try:
         from model_tools import _run_async
@@ -331,8 +349,16 @@ def _get_cron_auto_delivery_target():
     }
 
 
-def _maybe_skip_cron_duplicate_send(platform_name: str, chat_id: str, thread_id: str | None):
-    """Skip redundant cron send_message calls when the scheduler will auto-deliver there."""
+def _maybe_skip_cron_duplicate_send(platform_name: str, chat_id: str, thread_id: str | None, *, create_new_thread: bool = False):
+    """Skip redundant cron send_message calls when the scheduler will auto-deliver there.
+
+    Fresh-thread sends are exempt: those are intentionally different from the
+    scheduler's own delivery path and are used to create a brand-new Discord
+    thread for the run.
+    """
+    if create_new_thread:
+        return None
+
     auto_target = _get_cron_auto_delivery_target()
     if not auto_target:
         return None
@@ -362,7 +388,9 @@ def _maybe_skip_cron_duplicate_send(platform_name: str, chat_id: str, thread_id:
     }
 
 
-async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None):
+async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None,
+                            create_new_thread: bool = False, thread_name: str | None = None,
+                            auto_archive_duration: int = 1440):
     """Route a message to the appropriate platform sender.
 
     Long messages are automatically chunked to fit within platform limits
@@ -519,9 +547,87 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
         else:
             result = {"error": f"Direct sending not yet implemented for {platform.value}"}
 
-        if isinstance(result, dict) and result.get("error"):
-            return result
-        last_result = result
+    # Discord fresh-thread delivery needs special handling when the message is
+    # chunked: we must create exactly one thread, then post the remaining chunks
+    # into that same thread instead of spawning a new thread per chunk.
+    if platform == Platform.DISCORD and create_new_thread:
+        if not chunks:
+            chunks = [""]
+
+        first_result = await _send_discord(
+            pconfig.token,
+            chat_id,
+            chunks[0],
+            thread_id=thread_id,
+            create_new_thread=True,
+            thread_name=thread_name,
+            auto_archive_duration=auto_archive_duration,
+        )
+        if isinstance(first_result, dict) and first_result.get("error"):
+            return first_result
+        last_result = first_result
+
+        new_thread_id = None
+        if isinstance(first_result, dict):
+            new_thread_id = first_result.get("thread_id")
+        if not new_thread_id:
+            return {"error": "Discord fresh-thread delivery did not return a thread_id"}
+
+        for chunk in chunks[1:]:
+            result = await _send_discord(
+                pconfig.token,
+                chat_id,
+                chunk,
+                thread_id=new_thread_id,
+                create_new_thread=False,
+                thread_name=thread_name,
+                auto_archive_duration=auto_archive_duration,
+            )
+            if isinstance(result, dict) and result.get("error"):
+                return result
+            last_result = result
+    else:
+        for chunk in chunks:
+            if platform == Platform.DISCORD:
+                result = await _send_discord(
+                    pconfig.token,
+                    chat_id,
+                    chunk,
+                    thread_id=thread_id,
+                    create_new_thread=create_new_thread,
+                    thread_name=thread_name,
+                    auto_archive_duration=auto_archive_duration,
+                )
+            elif platform == Platform.SLACK:
+                result = await _send_slack(pconfig.token, chat_id, chunk)
+            elif platform == Platform.WHATSAPP:
+                result = await _send_whatsapp(pconfig.extra, chat_id, chunk)
+            elif platform == Platform.SIGNAL:
+                result = await _send_signal(pconfig.extra, chat_id, chunk)
+            elif platform == Platform.EMAIL:
+                result = await _send_email(pconfig.extra, chat_id, chunk)
+            elif platform == Platform.SMS:
+                result = await _send_sms(pconfig.api_key, chat_id, chunk)
+            elif platform == Platform.MATTERMOST:
+                result = await _send_mattermost(pconfig.token, pconfig.extra, chat_id, chunk)
+            elif platform == Platform.MATRIX:
+                result = await _send_matrix(pconfig.token, pconfig.extra, chat_id, chunk)
+            elif platform == Platform.HOMEASSISTANT:
+                result = await _send_homeassistant(pconfig.token, pconfig.extra, chat_id, chunk)
+            elif platform == Platform.DINGTALK:
+                result = await _send_dingtalk(pconfig.extra, chat_id, chunk)
+            elif platform == Platform.FEISHU:
+                result = await _send_feishu(pconfig, chat_id, chunk, thread_id=thread_id)
+            elif platform == Platform.WECOM:
+                result = await _send_wecom(pconfig.extra, chat_id, chunk)
+            elif platform == Platform.BLUEBUBBLES:
+                result = await _send_bluebubbles(pconfig.extra, chat_id, chunk)
+            else:
+                result = {"error": f"Direct sending not yet implemented for {platform.value}"}
+
+            if isinstance(result, dict) and result.get("error"):
+                return result
+            last_result = result
 
     if warning and isinstance(last_result, dict) and last_result.get("success"):
         warnings = list(last_result.get("warnings", []))
@@ -678,6 +784,77 @@ async def _send_discord(token, chat_id, message, thread_id=None, media_files=Non
         from gateway.platforms.base import resolve_proxy_url, proxy_kwargs_for_aiohttp
         _proxy = resolve_proxy_url(platform_env_var="DISCORD_PROXY")
         _sess_kw, _req_kw = proxy_kwargs_for_aiohttp(_proxy)
+        headers = {"Authorization": f"Bot {token}", "Content-Type": "application/json"}
+        # When requested, create a fresh thread for this delivery.
+        # We prefer the parent channel inferred from the thread target, then
+        # use the actual message body as the visible starter message so the
+        # report is readable in the parent channel too.
+        if create_new_thread:
+            parent_id = chat_id
+            if thread_id:
+                async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30), **_sess_kw) as session:
+                    async with session.get(
+                        f"https://discord.com/api/v10/channels/{thread_id}",
+                        headers=headers,
+                        **_req_kw,
+                    ) as resp:
+                        if resp.status == 200:
+                            data = await resp.json()
+                            parent_id = str(data.get("parent_id") or parent_id)
+
+            thread_title = (thread_name or "Hermes Report").strip() or "Hermes Report"
+            seed_content = thread_title
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30), **_sess_kw) as session:
+                # Seed message in the parent channel so we can create a thread.
+                seed_resp = await session.post(
+                    f"https://discord.com/api/v10/channels/{parent_id}/messages",
+                    headers=headers,
+                    json={"content": seed_content},
+                    **_req_kw,
+                )
+                if seed_resp.status not in (200, 201):
+                    body = await seed_resp.text()
+                    return _error(f"Discord seed message error ({seed_resp.status}): {body}")
+                seed_data = await seed_resp.json()
+                seed_msg_id = seed_data.get("id")
+
+                # Create thread from the seed message.
+                thread_resp = await session.post(
+                    f"https://discord.com/api/v10/channels/{parent_id}/messages/{seed_msg_id}/threads",
+                    headers=headers,
+                    json={"name": thread_title, "auto_archive_duration": auto_archive_duration},
+                    **_req_kw,
+                )
+                if thread_resp.status not in (200, 201):
+                    body = await thread_resp.text()
+                    return _error(f"Discord thread creation error ({thread_resp.status}): {body}")
+                thread_data = await thread_resp.json()
+                new_thread_id = str(thread_data.get("id"))
+
+                # Keep the starter message in the parent channel so the thread
+                # remains anchored and visible in Discord's thread list.
+                # Deleting the seed can make the thread much harder to discover
+                # (and in some cases effectively orphan it from the channel UI).
+
+                if message:
+                    from gateway.platforms.base import BasePlatformAdapter
+                    message_chunks = BasePlatformAdapter.truncate_message(message, 2000)
+                    last_post_data = None
+                    for chunk in message_chunks:
+                        post_resp = await session.post(
+                            f"https://discord.com/api/v10/channels/{new_thread_id}/messages",
+                            headers=headers,
+                            json={"content": chunk},
+                            **_req_kw,
+                        )
+                        if post_resp.status not in (200, 201):
+                            body = await post_resp.text()
+                            return _error(f"Discord thread post error ({post_resp.status}): {body}")
+                        last_post_data = await post_resp.json()
+                    return {"success": True, "platform": "discord", "chat_id": parent_id, "thread_id": new_thread_id, "message_id": (last_post_data or {}).get("id")}
+
+                return {"success": True, "platform": "discord", "chat_id": parent_id, "thread_id": new_thread_id, "message_id": seed_msg_id}
+
         # Thread endpoint: Discord threads are channels; send directly to the thread ID.
         if thread_id:
             url = f"https://discord.com/api/v10/channels/{thread_id}/messages"

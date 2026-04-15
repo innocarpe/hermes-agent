@@ -3,6 +3,7 @@
 import json
 import logging
 import os
+from datetime import datetime
 from unittest.mock import AsyncMock, patch, MagicMock
 
 import pytest
@@ -517,32 +518,66 @@ class TestDeliverResultWrapping:
 
         mirror_mock.assert_not_called()
 
-    def test_origin_delivery_preserves_thread_id(self):
-        """Origin delivery should forward thread_id to the send helper."""
+    def test_discord_delivery_can_create_new_thread(self):
+        """Discord cron delivery can request a fresh thread for each run."""
         from gateway.config import Platform
 
         pconfig = MagicMock()
         pconfig.enabled = True
         mock_cfg = MagicMock()
-        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+        mock_cfg.platforms = {Platform.DISCORD: pconfig}
 
         job = {
             "id": "test-job",
-            "name": "topic-job",
+            "name": "daily-youtube-benchmark",
             "deliver": "origin",
+            "discord_new_thread_per_delivery": True,
             "origin": {
-                "platform": "telegram",
-                "chat_id": "-1001",
-                "thread_id": "17585",
+                "platform": "discord",
+                "chat_id": "1493169190197268510",
+                "thread_id": "1493466324209242283",
             },
         }
 
         with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
              patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock:
-            _deliver_result(job, "hello")
+            _deliver_result(job, "Today\'s benchmark report")
 
         send_mock.assert_called_once()
-        assert send_mock.call_args.kwargs["thread_id"] == "17585"
+        assert send_mock.call_args.kwargs["create_new_thread"] is True
+        assert send_mock.call_args.kwargs["thread_id"] == "1493466324209242283"
+        assert send_mock.call_args.kwargs["thread_name"].startswith("daily youtube benchmark")
+
+    def test_discord_delivery_uses_custom_thread_name_template(self):
+        """Discord cron delivery can use a human-friendly thread title template."""
+        from gateway.config import Platform
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.DISCORD: pconfig}
+
+        job = {
+            "id": "test-job",
+            "name": "daily-youtube-benchmark",
+            "deliver": "origin",
+            "discord_new_thread_per_delivery": True,
+            "discord_thread_name_template": "Youtube {date_kst} 벤치마크 · {time_compact}",
+            "origin": {
+                "platform": "discord",
+                "chat_id": "1493169190197268510",
+                "thread_id": "1493466324209242283",
+            },
+        }
+
+        fixed_now = datetime(2026, 4, 14, 8, 0, 0)
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler._hermes_now", return_value=fixed_now), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock:
+            _deliver_result(job, "Today\'s benchmark report")
+
+        send_mock.assert_called_once()
+        assert send_mock.call_args.kwargs["thread_name"] == "Youtube 2026/4/14 벤치마크 · 0800"
 
 
 class TestDeliverResultErrorReturns:
@@ -1119,6 +1154,12 @@ class TestRunJobSkillBacked:
 
 class TestSilentDelivery:
     """Verify that [SILENT] responses suppress delivery while still saving output."""
+
+    @pytest.fixture(autouse=True)
+    def _disable_tick_lock(self):
+        # xdist runs cron tests in parallel, so avoid real file-lock contention.
+        with patch("cron.scheduler.fcntl.flock", return_value=None):
+            yield
 
     def _make_job(self):
         return {

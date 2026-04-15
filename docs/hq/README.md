@@ -16,6 +16,15 @@
 - `docs/hq/first-app-revenue-effort-estimate.md` — 기능별 예상 공수
 - `docs/hq/first-app-revenue-release-plan.md` — 출시 기준 전체 개발 계획
 - `docs/hq/first-app-revenue-execution-checklist.md` — 30일 실행 체크리스트
+- `docs/hq/first-app-revenue-photo-report-exploration.md` — 현재 탐색 중인 Android-first 사진→보고서 방향 SSOT 초안
+- `docs/hq/first-app-revenue-photo-report-screen-map.md` — 사진→보고서 MVP 화면 구조 / 상태 정의
+- `docs/hq/first-app-revenue-photo-report-wireframe-3-screens.md` — 사진→보고서 첫 3개 화면 와이어프레임 초안
+- `docs/hq/first-app-revenue-photo-report-preview-screen.md` — 보고서 미리보기 / PDF 내보내기 화면 초안
+- `docs/hq/first-app-revenue-photo-report-design-tokens.md` — 사진→보고서 디자인 토큰 초안
+- `docs/hq/first-app-revenue-photo-report-component-inventory.md` — 사진→보고서 컴포넌트 인벤토리 초안
+- `docs/hq/first-app-revenue-photo-report-development-order.md` — 기존 HQ 플로우를 이 앱에 적용한 실행 순서
+- `docs/hq/first-app-revenue-ux-tool-choice.md` — 사진→보고서 앱의 UX 초안 도구 선택( Pencil MCP 1순위 )
+- `docs/hq/pencil-mcp-prompt-photo-report.md` — Pencil MCP용 사진→보고서 초안 프롬프트
 - `docs/hq/initiative-card-first-app.md` — 첫 앱 이니셔티브 카드
 - `docs/hq/ai-ux-development-flow.md` — AI 디자인 선행 → 기준안 고정 → 코드 구현 기본 흐름
 - `docs/hq/ai-ux-product-brief-template.md` — 앱 개발 시작용 제품 브리프 템플릿

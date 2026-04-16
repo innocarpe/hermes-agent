@@ -1890,6 +1890,20 @@ class HermesCLI:
             return "class:status-bar-warn"
         return "class:status-bar-good"
 
+    def _status_bar_context_reason(self, percent_used: Optional[int]) -> str | None:
+        if percent_used is None:
+            return None
+        if percent_used >= 95:
+            return "critical: 95%+"
+        if percent_used >= 50:
+            return "warn: 50%+"
+        return None
+
+    def _status_bar_percent_label(self, percent_used: Optional[int]) -> str:
+        percent_label = f"{percent_used}%" if percent_used is not None else "--"
+        reason = self._status_bar_context_reason(percent_used)
+        return f"{percent_label} ({reason})" if reason else percent_label
+
     def _build_context_bar(self, percent_used: Optional[int], width: int = 10) -> str:
         safe_percent = max(0, min(100, percent_used or 0))
         filled = round((safe_percent / 100) * width)
@@ -2069,11 +2083,15 @@ class HermesCLI:
             if width is None:
                 width = self._get_tui_terminal_width()
             percent = snapshot["context_percent"]
-            percent_label = f"{percent}%" if percent is not None else "--"
+            percent_label = self._status_bar_percent_label(percent)
             duration_label = snapshot["duration"]
 
             if width < 52:
-                text = f"⚕ {snapshot['model_short']} · {duration_label}"
+                reason_label = self._status_bar_context_reason(percent)
+                if reason_label:
+                    text = f"⚕ {snapshot['model_short']} · {reason_label} · {duration_label}"
+                else:
+                    text = f"⚕ {snapshot['model_short']} · {duration_label}"
                 return self._trim_status_bar_text(text, width)
             if width < 76:
                 parts = [f"⚕ {snapshot['model_short']}", percent_label]
@@ -2105,18 +2123,26 @@ class HermesCLI:
             # line and produce duplicated status bar rows over long sessions.
             width = self._get_tui_terminal_width()
             duration_label = snapshot["duration"]
+            percent = snapshot["context_percent"]
+            reason_label = self._status_bar_context_reason(percent)
 
             if width < 52:
                 frags = [
                     ("class:status-bar", " ⚕ "),
                     ("class:status-bar-strong", snapshot["model_short"]),
+                ]
+                if reason_label:
+                    frags.extend([
+                        ("class:status-bar-dim", " · "),
+                        (self._status_bar_context_style(percent), reason_label),
+                    ])
+                frags.extend([
                     ("class:status-bar-dim", " · "),
                     ("class:status-bar-dim", duration_label),
                     ("class:status-bar", " "),
-                ]
+                ])
             else:
-                percent = snapshot["context_percent"]
-                percent_label = f"{percent}%" if percent is not None else "--"
+                percent_label = self._status_bar_percent_label(percent)
                 if width < 76:
                     frags = [
                         ("class:status-bar", " ⚕ "),

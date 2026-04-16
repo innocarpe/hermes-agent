@@ -138,3 +138,32 @@ class TestAnsiRichTextHelper:
     def test_strips_ansi_but_keeps_plain_text(self):
         text = _rich_text_from_ansi("\x1b[31mred\x1b[0m")
         assert text.plain == "red"
+
+
+class TestStatusBarContextReason:
+    def _make_cli_stub(self, *, percent: int, width: int = 70):
+        cli = HermesCLI.__new__(HermesCLI)
+        cli.model = "gpt-5.4"
+        cli._get_status_bar_snapshot = lambda: {
+            "model_short": "gpt-5.4",
+            "duration": "1h",
+            "context_percent": percent,
+            "context_length": None,
+            "context_tokens": 0,
+        }
+        cli._get_tui_terminal_width = lambda: width
+        return cli
+
+    def test_build_status_bar_text_shows_warn_reason(self):
+        cli = self._make_cli_stub(percent=52)
+
+        text = cli._build_status_bar_text()
+
+        assert "52% (warn: 50%+)" in text
+
+    def test_build_status_bar_text_shows_critical_reason(self):
+        cli = self._make_cli_stub(percent=96)
+
+        text = cli._build_status_bar_text()
+
+        assert "96% (critical: 95%+)" in text

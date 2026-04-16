@@ -268,7 +268,13 @@ def load_cli_config() -> Dict[str, Any]:
                 "hype": "YOOO LET'S GOOOO!!! I am SO PUMPED to help you today! Every question is AMAZING and we're gonna CRUSH IT together! This is gonna be LEGENDARY! ARE YOU READY?! LET'S DO THIS!",
             },
         },
-
+        "goal_until_done": {
+            "enabled": True,
+            "default_max_attempts": 3,
+            "default_max_idle_seconds": 600,
+            "default_backoff_seconds": [0, 30, 120],
+            "default_max_runtime_seconds": 3600,
+        },
         "display": {
             "compact": False,
             "resume_display": "full",
@@ -5522,6 +5528,12 @@ class HermesCLI:
             self._handle_stop_command()
         elif canonical == "background":
             self._handle_background_command(cmd_original)
+        elif canonical == "until-done":
+            self._handle_until_done_command(cmd_original)
+        elif canonical == "goal-status":
+            self._handle_goal_status_command(cmd_original)
+        elif canonical == "goal-stop":
+            self._handle_goal_stop_command(cmd_original)
         elif canonical == "btw":
             self._handle_btw_command(cmd_original)
         elif canonical == "queue":
@@ -5811,6 +5823,157 @@ class HermesCLI:
         thread = threading.Thread(target=run_background, daemon=True, name=f"bg-task-{task_id}")
         self._background_tasks[task_id] = thread
         thread.start()
+
+    def _handle_until_done_command(self, cmd: str):
+        """Handle /until-done <goal> — run a goal contract in the background until complete or blocked."""
+        parts = cmd.strip().split(maxsplit=1)
+        if len(parts) < 2 or not parts[1].strip():
+            _cprint("  Usage: /until-done <goal>")
+            _cprint("  Example: /until-done Implement OAuth login and stop only when tests pass")
+            return
+        if not self._ensure_runtime_credentials():
+            _cprint("  (>_<) Cannot start until-done run: no valid credentials.")
+            return
+
+        from agent.goal_until_done import GoalContract, load_goal_state
+
+        if not hasattr(self, "_goal_runs"):
+            self._goal_runs = {}
+
+        goal_text = parts[1].strip()
+        cfg = (CLI_CONFIG.get("goal_until_done") or {}) if isinstance(CLI_CONFIG, dict) else {}
+        task_id = f"goal_{datetime.now().strftime('%H%M%S')}_{uuid.uuid4().hex[:6]}"
+        state_path = get_hermes_home() / "goals" / f"{task_id}.json"
+        contract = GoalContract(
+            goal=goal_text,
+            done_when=["DONE"],
+            constraints=[
+                "Stop only when the goal is complete, blocked pending approval, or terminally blocked.",
+                "Include the token DONE only when the goal is actually complete.",
+            ],
+            non_goals=[],
+            retry_policy={
+                "max_attempts": int(cfg.get("default_max_attempts", 3)),
+                "backoff_seconds": list(cfg.get("default_backoff_seconds", [0, 30, 120])),
+            },
+            max_runtime_seconds=int(cfg.get("default_max_runtime_seconds", 3600)),
+            max_idle_seconds=int(cfg.get("default_max_idle_seconds", 600)),
+        )
+        turn_route = self._resolve_turn_agent_config(goal_text)
+
+        _cprint(f"  🎯 Goal-until-done run started")
+        _cprint(f"  Run ID: {task_id}")
+        _cprint(f"  Goal: {goal_text[:80]}{'...' if len(goal_text) > 80 else ''}")
+
+        def _run_goal():
+            try:
+                goal_agent = AIAgent(
+                    model=turn_route["model"],
+                    api_key=turn_route["runtime"].get("api_key"),
+                    base_url=turn_route["runtime"].get("base_url"),
+                    provider=turn_route["runtime"].get("provider"),
+                    api_mode=turn_route["runtime"].get("api_mode"),
+                    acp_command=turn_route["runtime"].get("command"),
+                    acp_args=turn_route["runtime"].get("args"),
+                    max_iterations=self.max_turns,
+                    enabled_toolsets=self.enabled_toolsets,
+                    quiet_mode=True,
+                    verbose_logging=False,
+                    session_id=task_id,
+                    platform="cli",
+                    session_db=self._session_db,
+                    reasoning_config=self.reasoning_config,
+                    service_tier=self.service_tier,
+                    request_overrides=turn_route.get("request_overrides"),
+                    providers_allowed=self._providers_only,
+                    providers_ignored=self._providers_ignore,
+                    providers_order=self._providers_order,
+                    provider_sort=self._provider_sort,
+                    provider_require_parameters=self._provider_require_params,
+                    provider_data_collection=self._provider_data_collection,
+                    fallback_model=self._fallback_model,
+                )
+                goal_agent._print_fn = lambda *_a, **_kw: None
+                state = goal_agent.run_until_done(contract, state_path=state_path)
+                final_state = load_goal_state(state_path)
+                self._goal_runs[task_id]["state"] = final_state.status
+                self._goal_runs[task_id]["last_summary"] = final_state.last_attempt_summary
+                print()
+                _cprint(f"  ✅ Goal run {task_id} finished with status: {final_state.status}")
+                if final_state.last_attempt_summary:
+                    ChatConsole().print(Panel(
+                        _rich_text_from_ansi(final_state.last_attempt_summary),
+                        title="[bold]Goal-until-done result[/]",
+                        title_align="left",
+                        border_style="#4F6D4A",
+                        box=rich_box.HORIZONTALS,
+                        padding=(1, 2),
+                    ))
+            except Exception as e:
+                self._goal_runs[task_id]["state"] = "failed"
+                self._goal_runs[task_id]["last_summary"] = str(e)
+                print()
+                _cprint(f"  ❌ Goal run {task_id} failed: {e}")
+            finally:
+                self._goal_runs[task_id]["thread"] = None
+                if self._app:
+                    self._invalidate(min_interval=0)
+
+        thread = threading.Thread(target=_run_goal, daemon=True, name=f"goal-run-{task_id}")
+        self._goal_runs[task_id] = {
+            "goal": goal_text,
+            "state": "running",
+            "state_path": str(state_path),
+            "thread": thread,
+            "last_summary": "",
+        }
+        thread.start()
+
+    def _handle_goal_status_command(self, cmd: str):
+        """Show current or specified goal-until-done run status."""
+        parts = cmd.strip().split(maxsplit=1)
+        run_id = parts[1].strip() if len(parts) > 1 else ""
+        if not hasattr(self, "_goal_runs") or not self._goal_runs:
+            _cprint("  No goal-until-done runs tracked in this session.")
+            return
+        if not run_id:
+            run_id = next(reversed(self._goal_runs.keys()))
+        meta = self._goal_runs.get(run_id)
+        if not meta:
+            _cprint(f"  Goal run not found: {run_id}")
+            return
+        summary = meta.get("last_summary") or "(no summary yet)"
+        _cprint(f"  Goal Run: {run_id}")
+        _cprint(f"  State: {meta.get('state', 'unknown')}")
+        _cprint(f"  Goal: {meta.get('goal', '')}")
+        _cprint(f"  State file: {meta.get('state_path', '')}")
+        _cprint(f"  Last summary: {summary[:160]}{'...' if len(summary) > 160 else ''}")
+
+    def _handle_goal_stop_command(self, cmd: str):
+        """Mark a running goal as stop-requested. Current minimal implementation is cooperative only."""
+        parts = cmd.strip().split(maxsplit=1)
+        run_id = parts[1].strip() if len(parts) > 1 else ""
+        if not hasattr(self, "_goal_runs") or not self._goal_runs:
+            _cprint("  No goal-until-done runs tracked in this session.")
+            return
+        if not run_id:
+            run_id = next(reversed(self._goal_runs.keys()))
+        meta = self._goal_runs.get(run_id)
+        if not meta:
+            _cprint(f"  Goal run not found: {run_id}")
+            return
+        meta["state"] = "stop_requested"
+        try:
+            from agent.goal_until_done import load_goal_state, save_goal_state
+            state = load_goal_state(meta["state_path"])
+            state.status = "stop_requested"
+            state.next_action = "stop_requested_by_user"
+            state.updated_at = datetime.now().astimezone().isoformat()
+            save_goal_state(state, Path(meta["state_path"]))
+        except Exception:
+            pass
+        _cprint(f"  Stop requested for goal run: {run_id}")
+        _cprint("  Note: current implementation records the stop request; active attempts will stop on the next cooperative integration point.")
 
     def _handle_btw_command(self, cmd: str):
         """Handle /btw <question> — ephemeral side question using session context.
@@ -7537,7 +7700,13 @@ class HermesCLI:
             except Exception:
                 pass
 
-    def chat(self, message, images: list = None) -> Optional[str]:
+    def chat(
+        self,
+        message,
+        images: list = None,
+        goal_until_done: bool = False,
+        goal_max_rounds: int = 5,
+    ) -> Optional[str]:
         """
         Send a message to the agent and get a response.
         
@@ -7710,13 +7879,23 @@ class HermesCLI:
                     agent_message = _msn + "\n\n" + agent_message
                     self._pending_model_switch_note = None
                 try:
-                    result = self.agent.run_conversation(
-                        user_message=agent_message,
-                        conversation_history=self.conversation_history[:-1],  # Exclude the message we just added
-                        stream_callback=stream_callback,
-                        task_id=self.session_id,
-                        persist_user_message=message if _voice_prefix else None,
-                    )
+                    if goal_until_done:
+                        result = self.agent.run_goal_until_done(
+                            user_message=agent_message,
+                            conversation_history=self.conversation_history[:-1],  # Exclude the message we just added
+                            stream_callback=stream_callback,
+                            task_id=self.session_id,
+                            persist_user_message=message if _voice_prefix else None,
+                            max_rounds=goal_max_rounds,
+                        )
+                    else:
+                        result = self.agent.run_conversation(
+                            user_message=agent_message,
+                            conversation_history=self.conversation_history[:-1],  # Exclude the message we just added
+                            stream_callback=stream_callback,
+                            task_id=self.session_id,
+                            persist_user_message=message if _voice_prefix else None,
+                        )
                 except Exception as exc:
                     logging.error("run_conversation raised: %s", exc, exc_info=True)
                     _summary = getattr(self.agent, '_summarize_api_error', lambda e: str(e)[:300])(exc)
@@ -9884,6 +10063,8 @@ def main(
     w: bool = False,
     checkpoints: bool = False,
     pass_session_id: bool = False,
+    goal_until_done: bool = False,
+    goal_max_rounds: int = 5,
 ):
     """
     Hermes Agent CLI - Interactive AI Assistant
@@ -9906,6 +10087,10 @@ def main(
         resume: Resume a previous session by its ID (e.g., 20260225_143052_a1b2c3)
         worktree: Run in an isolated git worktree (for parallel agents). Alias: -w
         w: Shorthand for --worktree
+        goal_until_done: If true, keep issuing follow-up turns until the goal
+                         appears complete or goal_max_rounds is reached.
+        goal_max_rounds: Maximum number of repeated goal turns when
+                         goal_until_done is enabled.
     
     Examples:
         python cli.py                            # Start interactive mode
@@ -10085,7 +10270,12 @@ def main(
             _query_label = query or ("[image attached]" if single_query_images else "")
             if _query_label:
                 cli.console.print(f"[bold blue]Query:[/] {_query_label}")
-            cli.chat(query, images=single_query_images or None)
+            cli.chat(
+                query,
+                images=single_query_images or None,
+                goal_until_done=goal_until_done,
+                goal_max_rounds=goal_max_rounds,
+            )
             cli._print_exit_summary()
         return
     

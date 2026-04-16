@@ -8,6 +8,7 @@ and response management.
 
 Features:
 - Automatic tool calling loop until completion
+- Goal-until-done outer loop for multi-turn autonomy
 - Configurable model parameters
 - Error handling and recovery
 - Message history management
@@ -38,6 +39,8 @@ import threading
 from types import SimpleNamespace
 import uuid
 from typing import List, Dict, Any, Optional
+
+from agent.goal_until_done import GoalContract, GoalRunState, run_until_done as run_goal_until_done
 from openai import OpenAI
 import fire
 from datetime import datetime
@@ -8169,6 +8172,41 @@ class AIAgent:
 
         return final_response
 
+    def run_until_done(
+        self,
+        contract: GoalContract | dict[str, Any],
+        *,
+        conversation_history: List[Dict[str, Any]] = None,
+        task_id: str = None,
+        state_path: Optional[Path] = None,
+    ) -> GoalRunState:
+        """Run repeated attempts until explicit completion criteria are met or a blocker is reached."""
+        if isinstance(contract, dict):
+            contract = GoalContract.from_dict(contract)
+
+        def _attempt_callback(attempt_index: int, attempt_prompt: str) -> Dict[str, Any]:
+            result = self.run_conversation(
+                attempt_prompt,
+                conversation_history=conversation_history,
+                task_id=task_id,
+            )
+            result = dict(result or {})
+            activity = {}
+            if hasattr(self, "get_activity_summary"):
+                try:
+                    activity = self.get_activity_summary() or {}
+                except Exception:
+                    activity = {}
+            result["activity"] = activity
+            return result
+
+        return run_goal_until_done(
+            contract,
+            _attempt_callback,
+            session_id=self.session_id,
+            state_path=state_path,
+        )
+
     def run_conversation(
         self,
         user_message: str,
@@ -11304,6 +11342,166 @@ class AIAgent:
             logger.warning("on_session_end hook failed: %s", exc)
 
         return result
+
+    def _build_goal_continuation_prompt(
+        self,
+        goal: str,
+        previous_result: Dict[str, Any],
+        round_index: int,
+        max_rounds: int,
+    ) -> str:
+        """Build the follow-up user message for a goal-until-done run.
+
+        The wrapper reuses the prior turn's messages, so this prompt only needs
+        to nudge the model toward the next missing step without re-stating the
+        whole conversation.
+        """
+        previous_response = (previous_result.get("final_response") or "").strip() or "(empty response)"
+        return (
+            f"Continue working toward the same goal: {goal}\n"
+            f"This is continuation round {round_index + 1} of {max_rounds}.\n"
+            "The previous turn produced the response below, but the overall goal is not yet confirmed complete.\n\n"
+            f"Previous assistant response:\n{previous_response}\n\n"
+            "Take the next necessary step only. Do not repeat finished work. If the goal is complete, say so succinctly."
+        )
+
+    @staticmethod
+    def _goal_response_needs_more_work(final_response: str) -> bool:
+        """Heuristic default for goal-until-done continuation decisions.
+
+        The wrapper prefers to stop once the assistant gives a substantive
+        answer, but it will continue if the answer clearly signals that more
+        work remains.
+        """
+        if not final_response:
+            return True
+        text = final_response.lower()
+        continue_markers = (
+            "still need",
+            "need to",
+            "needs to",
+            "next step",
+            "next steps",
+            "not yet",
+            "in progress",
+            "continue",
+            "continue working",
+            "more work",
+            "more to do",
+            "pending",
+            "remaining",
+            "i will",
+            "i'll",
+            "will now",
+            "to finish",
+            "requires verification",
+            "needs verification",
+        )
+        return any(marker in text for marker in continue_markers)
+
+    def run_goal_until_done(
+        self,
+        user_message: str,
+        system_message: str = None,
+        conversation_history: List[Dict[str, Any]] = None,
+        task_id: str = None,
+        stream_callback: Optional[callable] = None,
+        persist_user_message: Optional[str] = None,
+        max_rounds: int = 5,
+        completion_checker: Optional[callable] = None,
+    ) -> Dict[str, Any]:
+        """Run repeated conversation turns until the goal is satisfied.
+
+        Args:
+            user_message: The initial goal/task prompt.
+            system_message: Optional system prompt override.
+            conversation_history: Existing conversation history to seed the run.
+            task_id: Optional task isolation ID reused across rounds.
+            stream_callback: Optional token streaming callback.
+            persist_user_message: Optional clean first-turn user message for persistence.
+            max_rounds: Hard cap on the number of conversation turns to attempt.
+            completion_checker: Optional callable that receives the latest result
+                dict and returns True when the goal is complete.
+
+        Returns:
+            The final run_conversation result, augmented with a
+            ``goal_until_done`` metadata block.
+        """
+        if max_rounds < 1:
+            raise ValueError("max_rounds must be at least 1")
+
+        history = list(conversation_history) if conversation_history else []
+        current_user_message = user_message
+        current_persist_message = persist_user_message
+        effective_task_id = task_id or str(uuid.uuid4())
+        last_result: Dict[str, Any] | None = None
+        rounds_run = 0
+        termination_reason = "goal_not_reached"
+
+        while rounds_run < max_rounds:
+            rounds_run += 1
+            result = self.run_conversation(
+                user_message=current_user_message,
+                system_message=system_message,
+                conversation_history=history,
+                task_id=effective_task_id,
+                stream_callback=stream_callback,
+                persist_user_message=current_persist_message,
+            )
+            last_result = result
+            history = list(result.get("messages") or history)
+
+            if result.get("interrupted"):
+                termination_reason = "interrupted"
+                break
+
+            if completion_checker is not None:
+                try:
+                    goal_complete = bool(completion_checker(result))
+                except Exception as exc:
+                    logger.warning("goal completion checker failed: %s", exc)
+                    goal_complete = not self._goal_response_needs_more_work(
+                        result.get("final_response") or ""
+                    )
+            else:
+                goal_complete = not self._goal_response_needs_more_work(
+                    result.get("final_response") or ""
+                )
+
+            if goal_complete:
+                termination_reason = "goal_complete"
+                break
+
+            if rounds_run >= max_rounds:
+                termination_reason = "max_rounds_reached"
+                break
+
+            current_user_message = self._build_goal_continuation_prompt(
+                goal=user_message,
+                previous_result=result,
+                round_index=rounds_run,
+                max_rounds=max_rounds,
+            )
+            current_persist_message = current_user_message
+
+        if last_result is None:
+            last_result = {
+                "final_response": "",
+                "messages": history,
+                "interrupted": False,
+                "completed": False,
+            }
+
+        last_result["goal_until_done"] = {
+            "enabled": True,
+            "goal": user_message,
+            "rounds_run": rounds_run,
+            "max_rounds": max_rounds,
+            "completed": termination_reason == "goal_complete",
+            "termination_reason": termination_reason,
+            "task_id": effective_task_id,
+        }
+        return last_result
 
     def chat(self, message: str, stream_callback: Optional[callable] = None) -> str:
         """

@@ -13,6 +13,7 @@ from agent.prompt_builder import (
     _parse_skill_file,
     _skill_should_show,
     _find_hermes_md,
+    _find_planning_master,
     _find_git_root,
     _strip_yaml_frontmatter,
     build_skills_system_prompt,
@@ -28,6 +29,7 @@ from agent.prompt_builder import (
     SESSION_SEARCH_GUIDANCE,
     PLATFORM_HINTS,
     WSL_ENVIRONMENT_HINT,
+    GOAL_FIRST_EXECUTION_GUIDANCE,
 )
 from hermes_cli.nous_subscription import NousFeatureState, NousSubscriptionFeatures
 
@@ -48,6 +50,11 @@ class TestGuidanceConstants:
     def test_session_search_guidance_is_simple_cross_session_recall(self):
         assert "relevant cross-session context exists" in SESSION_SEARCH_GUIDANCE
         assert "recent turns of the current session" not in SESSION_SEARCH_GUIDANCE
+
+    def test_goal_first_execution_guidance_anchors_to_target(self):
+        assert "final target" in GOAL_FIRST_EXECUTION_GUIDANCE
+        assert "shortest path" in GOAL_FIRST_EXECUTION_GUIDANCE
+        assert "scope drift" in GOAL_FIRST_EXECUTION_GUIDANCE
 
 
 # =========================================================================
@@ -671,6 +678,30 @@ class TestBuildContextFilesPrompt:
         result = build_context_files_prompt(cwd=str(tmp_path))
         assert "ESLint" in result
 
+    def test_planning_master_loads_in_product_phase(self, tmp_path):
+        product_root = tmp_path / "02-제품" / "app"
+        product_root.mkdir(parents=True)
+        (product_root / "CLAUDE.md").write_text("Claude guidelines here.")
+        docs = tmp_path / "docs"
+        docs.mkdir()
+        (docs / "hermes-planning-master.md").write_text("Plan with care.")
+        result = build_context_files_prompt(cwd=str(product_root))
+        assert "Claude guidelines" in result
+        assert "Plan with care" in result
+        assert "hermes-planning-master.md" in result
+
+    def test_planning_master_is_not_loaded_outside_product_phase(self, tmp_path):
+        strategy_root = tmp_path / "01-전략" / "app"
+        strategy_root.mkdir(parents=True)
+        (strategy_root / "CLAUDE.md").write_text("Claude guidelines here.")
+        docs = tmp_path / "docs"
+        docs.mkdir()
+        (docs / "hermes-planning-master.md").write_text("Plan with care.")
+        result = build_context_files_prompt(cwd=str(strategy_root))
+        assert "Claude guidelines" in result
+        assert "Plan with care" not in result
+        assert "hermes-planning-master.md" not in result
+
 
 # =========================================================================
 # .hermes.md helper functions
@@ -708,6 +739,25 @@ class TestFindHermesMd:
         repo.mkdir()
         (repo / ".git").mkdir()
         assert _find_hermes_md(repo) is None
+
+
+class TestFindPlanningMaster:
+    def test_finds_in_cwd_docs(self, tmp_path):
+        docs = tmp_path / "docs"
+        docs.mkdir()
+        (docs / "hermes-planning-master.md").write_text("plan")
+        assert _find_planning_master(tmp_path) == docs / "hermes-planning-master.md"
+
+    def test_walks_to_git_root(self, tmp_path):
+        (tmp_path / ".git").mkdir()
+        (tmp_path / "docs").mkdir()
+        (tmp_path / "docs" / "hermes-planning-master.md").write_text("root plan")
+        sub = tmp_path / "a" / "b"
+        sub.mkdir(parents=True)
+        assert _find_planning_master(sub) == tmp_path / "docs" / "hermes-planning-master.md"
+
+    def test_returns_none_when_absent(self, tmp_path):
+        assert _find_planning_master(tmp_path) is None
 
 
 class TestFindGitRoot:

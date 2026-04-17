@@ -646,6 +646,8 @@ class TestBuildSystemPrompt:
     def test_always_has_identity(self, agent):
         prompt = agent._build_system_prompt()
         assert DEFAULT_AGENT_IDENTITY in prompt
+        from agent.prompt_builder import GOAL_FIRST_EXECUTION_GUIDANCE
+        assert GOAL_FIRST_EXECUTION_GUIDANCE in prompt
 
     def test_includes_system_message(self, agent):
         prompt = agent._build_system_prompt(system_message="Custom instruction")

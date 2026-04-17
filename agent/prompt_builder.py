@@ -87,6 +87,8 @@ def _find_git_root(start: Path) -> Optional[Path]:
 
 
 _HERMES_MD_NAMES = (".hermes.md", "HERMES.md")
+_PLANNING_MASTER_RELATIVE = Path("docs") / "hermes-planning-master.md"
+_PRODUCT_PHASE_DIR_NAMES = {"02-제품", "02-product", "02_product"}
 
 
 def _find_hermes_md(cwd: Path) -> Optional[Path]:
@@ -110,11 +112,52 @@ def _find_hermes_md(cwd: Path) -> Optional[Path]:
     return None
 
 
+def _find_planning_master(cwd: Path) -> Optional[Path]:
+    """Discover the nearest ``docs/hermes-planning-master.md``.
+
+    Search order: *cwd* first, then each parent directory up to (and including)
+    the git repository root. Returns the first match, or ``None`` if nothing is
+    found.
+    """
+    stop_at = _find_git_root(cwd)
+    current = cwd.resolve()
+
+    for directory in [current, *current.parents]:
+        candidate = directory / _PLANNING_MASTER_RELATIVE
+        if candidate.is_file():
+            return candidate
+        if stop_at and directory == stop_at:
+            break
+    return None
+
+
+def _load_planning_master(cwd: Path) -> str:
+    """Load docs/hermes-planning-master.md for planning-stage context."""
+    planning_master_path = _find_planning_master(cwd)
+    if not planning_master_path:
+        return ""
+    try:
+        content = planning_master_path.read_text(encoding="utf-8").strip()
+        if not content:
+            return ""
+        content = _scan_context_content(content, str(planning_master_path))
+        result = f"## {os.path.relpath(planning_master_path, cwd.resolve())}\n\n{content}"
+        return _truncate_content(result, "hermes-planning-master.md")
+    except Exception as e:
+        logger.debug("Could not read planning master %s: %s", planning_master_path, e)
+        return ""
+
+
+def _is_product_phase(cwd: Path) -> bool:
+    """Return True when the active workspace is under a 02-제품-style path."""
+    return any(part in _PRODUCT_PHASE_DIR_NAMES for part in cwd.resolve().parts)
+
+
 def _strip_yaml_frontmatter(content: str) -> str:
     """Remove optional YAML frontmatter (``---`` delimited) from *content*.
 
     The frontmatter may contain structured config (model overrides, tool
-    settings) that will be handled separately in a future PR.  For now we
+    settings) that will be handled separately in a future PR. For now we
     strip it so only the human-readable markdown body is injected into the
     system prompt.
     """
@@ -168,6 +211,14 @@ SKILLS_GUIDANCE = (
     "When using a skill and finding it outdated, incomplete, or wrong, "
     "patch it immediately with skill_manage(action='patch') — don't wait to be asked. "
     "Skills that aren't maintained become liabilities."
+)
+
+GOAL_FIRST_EXECUTION_GUIDANCE = (
+    "# Goal-first execution\n"
+    "- Before planning or executing any task, state the final target in one sentence.\n"
+    "- Choose the shortest path that completes the target.\n"
+    "- Avoid scope drift, side quests, and feature expansion until the target is complete.\n"
+    "- If the target changes, restate it before continuing."
 )
 
 TOOL_USE_ENFORCEMENT_GUIDANCE = (
@@ -1012,6 +1063,9 @@ def build_context_files_prompt(cwd: Optional[str] = None, skip_soul: bool = Fals
       3. CLAUDE.md / claude.md   (cwd only)
       4. .cursorrules / .cursor/rules/*.mdc  (cwd only)
 
+    If present, ``docs/hermes-planning-master.md`` is appended as a planning-
+    specific guide after the primary project context.
+
     SOUL.md from HERMES_HOME is independent and always included when present.
     Each context source is capped at 20,000 chars.
 
@@ -1033,6 +1087,10 @@ def build_context_files_prompt(cwd: Optional[str] = None, skip_soul: bool = Fals
     )
     if project_context:
         sections.append(project_context)
+
+    planning_master = _load_planning_master(cwd_path)
+    if project_context and _is_product_phase(cwd_path) and planning_master:
+        sections.append(planning_master)
 
     # SOUL.md from HERMES_HOME only — skip when already loaded as identity
     if not skip_soul:

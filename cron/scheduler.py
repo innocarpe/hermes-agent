@@ -185,6 +185,36 @@ def _resolve_delivery_target(job: dict) -> Optional[dict]:
     }
 
 
+def _validate_delivery_configuration(job: dict, delivery_target: Optional[dict]) -> Optional[str]:
+    """Return a human-readable delivery configuration error, if any.
+
+    Fresh-thread Discord deliveries are easy to misconfigure by pointing both
+    ``origin.chat_id`` and ``origin.thread_id`` at the same ID. That means the
+    job is anchored to a thread instead of a parent channel and is hard to
+    reason about later, so we fail fast here.
+    """
+    if not delivery_target:
+        return None
+
+    if delivery_target.get("platform") != "discord":
+        return None
+
+    if not job.get("discord_new_thread_per_delivery"):
+        return None
+
+    origin = _resolve_origin(job) or {}
+    chat_id = str(origin.get("chat_id") or "").strip()
+    thread_id = str(origin.get("thread_id") or "").strip()
+    if chat_id and thread_id and chat_id == thread_id:
+        return (
+            "discord fresh-thread delivery is misconfigured: origin.chat_id and "
+            "origin.thread_id are identical. Use the parent channel as chat_id "
+            "and keep thread_id only as source-context metadata."
+        )
+
+    return None
+
+
 # Media extension sets — keep in sync with gateway/platforms/base.py:_process_message_background
 _AUDIO_EXTS = frozenset({'.ogg', '.opus', '.mp3', '.wav', '.m4a'})
 _VIDEO_EXTS = frozenset({'.mp4', '.mov', '.avi', '.mkv', '.webm', '.3gp'})
@@ -391,8 +421,16 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
 
     # Prefer the live adapter when the gateway is running — this supports E2EE
     # rooms (e.g. Matrix) where the standalone HTTP path cannot encrypt.
+    # For Discord fresh-thread cron deliveries, this also lets us use the
+    # adapter's direct thread-creation path so the report body stays in the
+    # thread instead of landing in the parent channel first.
     runtime_adapter = (adapters or {}).get(platform)
-    if runtime_adapter is not None and loop is not None and getattr(loop, "is_running", lambda: False)():
+    use_live_adapter = (
+        runtime_adapter is not None
+        and loop is not None
+        and getattr(loop, "is_running", lambda: False)()
+    )
+    if use_live_adapter:
         send_metadata = {"thread_id": thread_id} if thread_id else None
         if create_new_thread:
             send_metadata = {
@@ -713,6 +751,9 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             load_dotenv(str(_hermes_home / ".env"), override=True, encoding="latin-1")
 
         delivery_target = _resolve_delivery_target(job)
+        delivery_error = _validate_delivery_configuration(job, delivery_target)
+        if delivery_error:
+            raise ValueError(delivery_error)
         if delivery_target:
             os.environ["HERMES_CRON_AUTO_DELIVER_PLATFORM"] = delivery_target["platform"]
             os.environ["HERMES_CRON_AUTO_DELIVER_CHAT_ID"] = str(delivery_target["chat_id"])
@@ -851,6 +892,15 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             session_db=_session_db,
         )
         
+        # Goal-until-done mode (opt-in per job or via cron config)
+        goal_until_done = bool(job.get("goal_until_done") or _cfg.get("cron", {}).get("goal_until_done"))
+        goal_max_rounds = int(
+            job.get("goal_until_done_rounds")
+            or job.get("goal_max_rounds")
+            or _cfg.get("cron", {}).get("goal_until_done_rounds")
+            or 5
+        )
+
         # Run the agent with an *inactivity*-based timeout: the job can run
         # for hours if it's actively calling tools / receiving stream tokens,
         # but a hung API call or stuck tool with no activity for the configured

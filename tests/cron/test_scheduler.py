@@ -209,6 +209,25 @@ class TestResolveDeliveryTarget:
             "chat_id": "1001234567890",
             "thread_id": None,
         }
+    def test_discord_fresh_thread_configuration_rejects_duplicate_anchor_and_thread_ids(self):
+        job = {
+            "deliver": "origin",
+            "discord_new_thread_per_delivery": True,
+            "origin": {
+                "platform": "discord",
+                "chat_id": "1493556383642026006",
+                "thread_id": "1493556383642026006",
+            },
+        }
+
+        error = _validate_delivery_configuration(job, {
+            "platform": "discord",
+            "chat_id": "1493556383642026006",
+            "thread_id": "1493556383642026006",
+        })
+
+        assert error is not None
+        assert "origin.chat_id and origin.thread_id are identical" in error
 
 
 class TestDeliverResultWrapping:
@@ -547,6 +566,54 @@ class TestDeliverResultWrapping:
         assert send_mock.call_args.kwargs["create_new_thread"] is True
         assert send_mock.call_args.kwargs["thread_id"] == "1493466324209242283"
         assert send_mock.call_args.kwargs["thread_name"].startswith("daily youtube benchmark")
+
+    def test_discord_fresh_thread_prefers_live_adapter_for_cron_delivery(self):
+        """Fresh-thread Discord cron deliveries should prefer the live adapter path when available."""
+        from gateway.config import Platform
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.DISCORD: pconfig}
+
+        runtime_adapter = MagicMock()
+        loop = MagicMock()
+        loop.is_running.return_value = True
+
+        job = {
+            "id": "test-job",
+            "name": "daily-youtube-benchmark",
+            "deliver": "origin",
+            "discord_new_thread_per_delivery": True,
+            "discord_thread_name_template": "Youtube {date_iso} 벤치마크 · {time_compact}",
+            "origin": {
+                "platform": "discord",
+                "chat_id": "1493169190197268510",
+                "thread_id": "1493466324209242283",
+            },
+        }
+
+        live_result = MagicMock()
+        live_result.success = True
+        future = MagicMock()
+        future.result.return_value = live_result
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("cron.scheduler.asyncio.run_coroutine_threadsafe", return_value=future) as run_threadsafe_mock, \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock:
+            runtime_adapter.send = MagicMock(return_value="live-coro")
+            _deliver_result(job, "Today's benchmark report", adapters={Platform.DISCORD: runtime_adapter}, loop=loop)
+
+        runtime_adapter.send.assert_called_once()
+        send_mock.assert_not_called()
+        run_threadsafe_mock.assert_called_once()
+        call_args = runtime_adapter.send.call_args.args
+        call_kwargs = runtime_adapter.send.call_args.kwargs
+        assert call_args[0] == "1493169190197268510"
+        assert call_args[1] == "Today's benchmark report"
+        assert call_kwargs["metadata"]["create_new_thread"] is True
+        assert call_kwargs["metadata"]["thread_name"].startswith("Youtube")
 
     def test_discord_delivery_uses_custom_thread_name_template(self):
         """Discord cron delivery can use a human-friendly thread title template."""

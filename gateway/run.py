@@ -9738,6 +9738,19 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
                 except (ProcessLookupError, PermissionError, OSError):
                     pass
             remove_pid_file()
+            # remove_pid_file() is a no-op when the PID doesn't match.
+            # Force-unlink to cover the old-process-crashed case.
+            try:
+                (get_hermes_home() / "gateway.pid").unlink(missing_ok=True)
+            except Exception:
+                pass
+            # Clean up any takeover marker the old process didn't consume
+            # (e.g. SIGKILL'd before its shutdown handler could read it).
+            try:
+                from gateway.status import clear_takeover_marker
+                clear_takeover_marker()
+            except Exception:
+                pass
             # Also release all scoped locks left by the old process.
             # Stopped (Ctrl+Z) processes don't release locks on exit,
             # leaving stale lock files that block the new gateway from starting.

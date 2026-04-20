@@ -770,7 +770,10 @@ HERMES_NIX_ENV_EOF
             NoNewPrivileges = true;
             ProtectSystem = "strict";
             ProtectHome = false;
-            ReadWritePaths = [ cfg.stateDir ];
+            ReadWritePaths = [
+              cfg.stateDir
+              cfg.workingDirectory
+            ];
             PrivateTmp = true;
           };
 

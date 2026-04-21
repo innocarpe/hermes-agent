@@ -5,6 +5,7 @@
 ## 빠른 입구
 
 - `docs/hq/decision-log.md` — 중요한 판단 기록
+- `docs/hq/01-전략/아카이브-인사이트-흡수-2026-04-21.md` — Threads/NaverCafe archive-to-HQ 일일 흡수 리포트
 - `docs/hq/youtube-benchmark-application-2026-04-15.md` — 외부 벤치마크를 TemperStone HQ 규칙으로 번역한 메모
 - `docs/hq/global-first-app-recommendation.md` — 앱 후보를 고르는 기준
 - `docs/hq/first-app-revenue-app-research.md` — 사진→보고서 앱 리서치 메모

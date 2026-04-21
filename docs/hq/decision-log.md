@@ -38,6 +38,20 @@ Record every important BD routing, override, approval, rework, and archive decis
 ## Recent entries
 
 ```yaml
+- timestamp: "2026-04-21T08:32:00+09:00"
+  initiative_id: "thread-collector-archive-insight-sync-2026-04-21"
+  decision: applied
+  actor: "Hermes"
+  rationale: "Absorbed the already-collected Threads/NaverCafe archive into the daily 01-전략 HQ report; signal remained stable around distribution-first funnels, AI-as-operating-system workflows, and low-cost repeatable revenue loops, with no meaningful new delta"
+  source: "docs/hq/01-전략/아카이브-인사이트-흡수-2026-04-21.md"
+  follow_up: "Watch for any new raw corpus delta or a shift from repeatable small-outcome loops toward larger product bets"
+- timestamp: "2026-04-20T08:31:00+09:00"
+  initiative_id: "thread-collector-archive-insight-sync-2026-04-20"
+  decision: applied
+  actor: "Hermes"
+  rationale: "Absorbed already-collected Threads/NaverCafe archive signals into the 01-전략 daily HQ report; emphasized distribution-first, funnel-oriented operators, AI-as-operating-system workflows, and low-cost repeatable revenue loops"
+  source: "docs/hq/01-전략/아카이브-인사이트-흡수-2026-04-20.md"
+  follow_up: "Use the next archive sync to check whether distribution-first and workflow-OS signals strengthen or flatten"
 - timestamp: "2026-04-15T11:29:00+09:00"
   initiative_id: "youtube-benchmark-2026-04-15"
   decision: applied

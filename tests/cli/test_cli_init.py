@@ -3,7 +3,10 @@ that only manifest at runtime (not in mocked unit tests)."""
 
 import os
 import sys
+from pathlib import Path
 from unittest.mock import MagicMock, patch
+
+from agent.goal_until_done import GoalContract, GoalRunState, save_goal_state
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -158,6 +161,27 @@ class TestSingleQueryState:
         assert cli._voice_tts_done.is_set()
         assert hasattr(cli, "_interrupt_queue")
         assert hasattr(cli, "_pending_input")
+
+
+class TestGoalStateRestore:
+    def test_init_restores_persisted_goal_runs(self, monkeypatch, tmp_path):
+        goals_home = tmp_path / ".hermes" / "goals"
+        goals_home.mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        save_goal_state(
+            GoalRunState(
+                run_id="goal_restore_1",
+                session_id="sess-1",
+                contract=GoalContract(goal="finish oauth"),
+                status="approval_required",
+                next_action="await_approval",
+            ),
+            goals_home / "goal_restore_1.json",
+        )
+        cli = _make_cli()
+        assert "goal_restore_1" in cli._goal_runs
+        assert cli._goal_runs["goal_restore_1"]["state"] == "approval_required"
+        assert cli._goal_runs["goal_restore_1"]["thread"] is None
 
 
 class TestHistoryDisplay:

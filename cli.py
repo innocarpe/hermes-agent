@@ -1870,6 +1870,33 @@ class HermesCLI:
         # Background task tracking: {task_id: threading.Thread}
         self._background_tasks: Dict[str, threading.Thread] = {}
         self._background_task_counter = 0
+        self._goal_runs: Dict[str, Dict[str, Any]] = {}
+        self._restore_goal_runs()
+
+    def _restore_goal_runs(self) -> None:
+
+        try:
+            from agent.goal_until_done import get_goals_home, load_goal_state
+        except Exception:
+            return
+
+        try:
+            goal_files = sorted(get_goals_home().glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+        except Exception:
+            return
+
+        for path in goal_files:
+            try:
+                state = load_goal_state(path)
+            except Exception:
+                continue
+            self._goal_runs[state.run_id] = {
+                "goal": state.contract.goal,
+                "state": state.status,
+                "state_path": str(path),
+                "thread": None,
+                "last_summary": state.last_attempt_summary,
+            }
 
     def _invalidate(self, min_interval: float = 0.25) -> None:
         """Throttled UI repaint — prevents terminal blinking on slow/SSH connections."""
@@ -5560,6 +5587,10 @@ class HermesCLI:
             self._handle_goal_status_command(cmd_original)
         elif canonical == "goal-stop":
             self._handle_goal_stop_command(cmd_original)
+        elif canonical == "goal-resume":
+            self._handle_goal_resume_command(cmd_original)
+        elif canonical == "goal-list":
+            self._handle_goal_list_command(cmd_original)
         elif canonical == "btw":
             self._handle_btw_command(cmd_original)
         elif canonical == "queue":
@@ -5850,6 +5881,81 @@ class HermesCLI:
         self._background_tasks[task_id] = thread
         thread.start()
 
+    def _start_goal_run(self, task_id: str, goal_text: str, contract, state_path: Path, turn_route: dict):
+        if not hasattr(self, "_goal_runs"):
+            self._goal_runs = {}
+
+        def _run_goal():
+            try:
+                from agent.goal_until_done import load_goal_state
+
+                goal_agent = AIAgent(
+                    model=turn_route["model"],
+                    api_key=turn_route["runtime"].get("api_key"),
+                    base_url=turn_route["runtime"].get("base_url"),
+                    provider=turn_route["runtime"].get("provider"),
+                    api_mode=turn_route["runtime"].get("api_mode"),
+                    acp_command=turn_route["runtime"].get("command"),
+                    acp_args=turn_route["runtime"].get("args"),
+                    max_iterations=self.max_turns,
+                    enabled_toolsets=self.enabled_toolsets,
+                    quiet_mode=True,
+                    verbose_logging=False,
+                    session_id=task_id,
+                    platform="cli",
+                    session_db=self._session_db,
+                    reasoning_config=self.reasoning_config,
+                    service_tier=self.service_tier,
+                    request_overrides=turn_route.get("request_overrides"),
+                    providers_allowed=self._providers_only,
+                    providers_ignored=self._providers_ignore,
+                    providers_order=self._providers_order,
+                    provider_sort=self._provider_sort,
+                    provider_require_parameters=self._provider_require_params,
+                    provider_data_collection=self._provider_data_collection,
+                    fallback_model=self._fallback_model,
+                )
+                self._goal_runs[task_id]["agent"] = goal_agent
+                goal_agent._print_fn = lambda *_a, **_kw: None
+                goal_agent.run_until_done(contract, state_path=state_path)
+                final_state = load_goal_state(state_path)
+                self._goal_runs[task_id]["state"] = final_state.status
+                self._goal_runs[task_id]["last_summary"] = final_state.last_attempt_summary
+                print()
+                _cprint(f"  ✅ Goal run {task_id} finished with status: {final_state.status}")
+                if final_state.status == "approval_required":
+                    _cprint("  Approval needed. Resolve the blocker, then use /goal-resume or /goal-stop.")
+                if final_state.last_attempt_summary:
+                    ChatConsole().print(Panel(
+                        _rich_text_from_ansi(final_state.last_attempt_summary),
+                        title="[bold]Goal-until-done result[/]",
+                        title_align="left",
+                        border_style="#4F6D4A",
+                        box=rich_box.HORIZONTALS,
+                        padding=(1, 2),
+                    ))
+            except Exception as e:
+                self._goal_runs[task_id]["state"] = "failed"
+                self._goal_runs[task_id]["last_summary"] = str(e)
+                print()
+                _cprint(f"  ❌ Goal run {task_id} failed: {e}")
+            finally:
+                self._goal_runs[task_id]["thread"] = None
+                self._goal_runs[task_id]["agent"] = None
+                if self._app:
+                    self._invalidate(min_interval=0)
+
+        thread = threading.Thread(target=_run_goal, daemon=True, name=f"goal-run-{task_id}")
+        self._goal_runs[task_id] = {
+            "goal": goal_text,
+            "state": "running",
+            "state_path": str(state_path),
+            "thread": thread,
+            "agent": self._goal_runs.get(task_id, {}).get("agent"),
+            "last_summary": self._goal_runs.get(task_id, {}).get("last_summary", ""),
+        }
+        thread.start()
+
     def _handle_until_done_command(self, cmd: str):
         """Handle /until-done <goal> — run a goal contract in the background until complete or blocked."""
         parts = cmd.strip().split(maxsplit=1)
@@ -5861,7 +5967,7 @@ class HermesCLI:
             _cprint("  (>_<) Cannot start until-done run: no valid credentials.")
             return
 
-        from agent.goal_until_done import GoalContract, load_goal_state
+        from agent.goal_until_done import GoalContract
 
         if not hasattr(self, "_goal_runs"):
             self._goal_runs = {}
@@ -5890,70 +5996,7 @@ class HermesCLI:
         _cprint(f"  🎯 Goal-until-done run started")
         _cprint(f"  Run ID: {task_id}")
         _cprint(f"  Goal: {goal_text[:80]}{'...' if len(goal_text) > 80 else ''}")
-
-        def _run_goal():
-            try:
-                goal_agent = AIAgent(
-                    model=turn_route["model"],
-                    api_key=turn_route["runtime"].get("api_key"),
-                    base_url=turn_route["runtime"].get("base_url"),
-                    provider=turn_route["runtime"].get("provider"),
-                    api_mode=turn_route["runtime"].get("api_mode"),
-                    acp_command=turn_route["runtime"].get("command"),
-                    acp_args=turn_route["runtime"].get("args"),
-                    max_iterations=self.max_turns,
-                    enabled_toolsets=self.enabled_toolsets,
-                    quiet_mode=True,
-                    verbose_logging=False,
-                    session_id=task_id,
-                    platform="cli",
-                    session_db=self._session_db,
-                    reasoning_config=self.reasoning_config,
-                    service_tier=self.service_tier,
-                    request_overrides=turn_route.get("request_overrides"),
-                    providers_allowed=self._providers_only,
-                    providers_ignored=self._providers_ignore,
-                    providers_order=self._providers_order,
-                    provider_sort=self._provider_sort,
-                    provider_require_parameters=self._provider_require_params,
-                    provider_data_collection=self._provider_data_collection,
-                    fallback_model=self._fallback_model,
-                )
-                goal_agent._print_fn = lambda *_a, **_kw: None
-                state = goal_agent.run_until_done(contract, state_path=state_path)
-                final_state = load_goal_state(state_path)
-                self._goal_runs[task_id]["state"] = final_state.status
-                self._goal_runs[task_id]["last_summary"] = final_state.last_attempt_summary
-                print()
-                _cprint(f"  ✅ Goal run {task_id} finished with status: {final_state.status}")
-                if final_state.last_attempt_summary:
-                    ChatConsole().print(Panel(
-                        _rich_text_from_ansi(final_state.last_attempt_summary),
-                        title="[bold]Goal-until-done result[/]",
-                        title_align="left",
-                        border_style="#4F6D4A",
-                        box=rich_box.HORIZONTALS,
-                        padding=(1, 2),
-                    ))
-            except Exception as e:
-                self._goal_runs[task_id]["state"] = "failed"
-                self._goal_runs[task_id]["last_summary"] = str(e)
-                print()
-                _cprint(f"  ❌ Goal run {task_id} failed: {e}")
-            finally:
-                self._goal_runs[task_id]["thread"] = None
-                if self._app:
-                    self._invalidate(min_interval=0)
-
-        thread = threading.Thread(target=_run_goal, daemon=True, name=f"goal-run-{task_id}")
-        self._goal_runs[task_id] = {
-            "goal": goal_text,
-            "state": "running",
-            "state_path": str(state_path),
-            "thread": thread,
-            "last_summary": "",
-        }
-        thread.start()
+        self._start_goal_run(task_id, goal_text, contract, state_path, turn_route)
 
     def _handle_goal_status_command(self, cmd: str):
         """Show current or specified goal-until-done run status."""
@@ -5968,11 +6011,24 @@ class HermesCLI:
         if not meta:
             _cprint(f"  Goal run not found: {run_id}")
             return
+        persisted = None
+        try:
+            from agent.goal_until_done import load_goal_state
+            persisted = load_goal_state(meta.get("state_path", ""))
+        except Exception:
+            persisted = None
+        if persisted is not None:
+            meta["state"] = persisted.status
+            meta["last_summary"] = persisted.last_attempt_summary
         summary = meta.get("last_summary") or "(no summary yet)"
         _cprint(f"  Goal Run: {run_id}")
         _cprint(f"  State: {meta.get('state', 'unknown')}")
         _cprint(f"  Goal: {meta.get('goal', '')}")
         _cprint(f"  State file: {meta.get('state_path', '')}")
+        if persisted is not None:
+            _cprint(f"  Attempts used: {persisted.attempts_used}")
+            _cprint(f"  Next action: {persisted.next_action or '-'}")
+            _cprint(f"  Stop requested: {'yes' if persisted.stop_requested else 'no'}")
         _cprint(f"  Last summary: {summary[:160]}{'...' if len(summary) > 160 else ''}")
 
     def _handle_goal_stop_command(self, cmd: str):
@@ -5992,14 +6048,69 @@ class HermesCLI:
         try:
             from agent.goal_until_done import load_goal_state, save_goal_state
             state = load_goal_state(meta["state_path"])
-            state.status = "stop_requested"
+            state.stop_requested = True
             state.next_action = "stop_requested_by_user"
             state.updated_at = datetime.now().astimezone().isoformat()
             save_goal_state(state, Path(meta["state_path"]))
         except Exception:
             pass
+        active_agent = meta.get("agent")
+        if active_agent is not None:
+            try:
+                active_agent.interrupt()
+            except Exception:
+                pass
         _cprint(f"  Stop requested for goal run: {run_id}")
-        _cprint("  Note: current implementation records the stop request; active attempts will stop on the next cooperative integration point.")
+        if active_agent is not None:
+            _cprint("  Active attempt interrupt sent. The current attempt should stop shortly.")
+        else:
+            _cprint("  Active attempts stop at the next cooperative checkpoint (attempt boundary or backoff wait).")
+
+    def _handle_goal_resume_command(self, cmd: str):
+        """Resume a stopped or approval-blocked goal run from persisted state."""
+        parts = cmd.strip().split(maxsplit=1)
+        run_id = parts[1].strip() if len(parts) > 1 else ""
+        if not hasattr(self, "_goal_runs") or not self._goal_runs:
+            _cprint("  No goal-until-done runs tracked in this session.")
+            return
+        if not run_id:
+            run_id = next(reversed(self._goal_runs.keys()))
+        meta = self._goal_runs.get(run_id)
+        if not meta:
+            _cprint(f"  Goal run not found: {run_id}")
+            return
+        if meta.get("thread") is not None:
+            _cprint(f"  Goal run is already active: {run_id}")
+            return
+        if not self._ensure_runtime_credentials():
+            _cprint("  (>_<) Cannot resume goal run: no valid credentials.")
+            return
+
+        from agent.goal_until_done import load_goal_state, save_goal_state
+
+        state_path = Path(meta["state_path"])
+        state = load_goal_state(state_path)
+        state.stop_requested = False
+        state.status = "running"
+        state.next_action = "resume_requested"
+        state.updated_at = datetime.now().astimezone().isoformat()
+        save_goal_state(state, state_path)
+
+        turn_route = self._resolve_turn_agent_config(meta.get("goal", state.contract.goal))
+        _cprint(f"  ▶️ Resuming goal run: {run_id}")
+        self._start_goal_run(run_id, meta.get("goal", state.contract.goal), state.contract, state_path, turn_route)
+
+    def _handle_goal_list_command(self, cmd: str):
+        """List tracked goal-until-done runs."""
+        if not hasattr(self, "_goal_runs") or not self._goal_runs:
+            _cprint("  No goal-until-done runs tracked in this session.")
+            return
+        _cprint("  Goal runs:")
+        for run_id, meta in reversed(list(self._goal_runs.items())):
+            goal = meta.get("goal", "")
+            state = meta.get("state", "unknown")
+            preview = goal[:60] + ("..." if len(goal) > 60 else "")
+            _cprint(f"  - {run_id} [{state}] {preview}")
 
     def _handle_btw_command(self, cmd: str):
         """Handle /btw <question> — ephemeral side question using session context.

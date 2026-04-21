@@ -86,6 +86,7 @@ class GoalRunState:
     last_attempt_summary: str = ""
     last_blocker_type: str = ""
     next_action: str = ""
+    stop_requested: bool = False
     updated_at: str = field(default_factory=_utcnow)
     attempts: list[AttemptRecord] = field(default_factory=list)
 
@@ -106,6 +107,7 @@ class GoalRunState:
             "last_attempt_summary": self.last_attempt_summary,
             "last_blocker_type": self.last_blocker_type,
             "next_action": self.next_action,
+            "stop_requested": self.stop_requested,
             "updated_at": self.updated_at,
             "attempts": [asdict(a) for a in self.attempts],
         }
@@ -142,6 +144,41 @@ def _extract_final_response(result: Any) -> str:
     if isinstance(result, dict):
         return str(result.get("final_response") or result.get("response") or "").strip()
     return str(result or "").strip()
+
+
+def _state_requests_stop(path: Optional[Path]) -> bool:
+    if path is None or not path.exists():
+        return False
+    try:
+        persisted = load_goal_state(path)
+    except Exception:
+        return False
+    return bool(persisted.stop_requested or persisted.status == "stop_requested")
+
+
+def _mark_stopped_by_user(state: GoalRunState, path: Optional[Path]) -> GoalRunState:
+    state.stop_requested = True
+    state.status = "stopped"
+    state.last_blocker_type = "stop_requested"
+    state.next_action = "stopped_by_user"
+    state.updated_at = _utcnow()
+    save_goal_state(state, path)
+    return state
+
+
+def _sleep_with_stop_check(
+    total_seconds: int,
+    path: Optional[Path],
+    sleep_fn: Callable[[float], None],
+) -> bool:
+    remaining = max(0.0, float(total_seconds))
+    while remaining > 0:
+        if _state_requests_stop(path):
+            return True
+        chunk = min(0.2, remaining)
+        sleep_fn(chunk)
+        remaining -= chunk
+    return _state_requests_stop(path)
 
 
 def _done_criteria_met(contract: GoalContract, result: Any) -> bool:
@@ -223,7 +260,7 @@ def run_until_done(
 ) -> GoalRunState:
     if isinstance(contract, dict):
         contract = GoalContract.from_dict(contract)
-    run_id = uuid.uuid4().hex
+    run_id = state_path.stem if state_path else uuid.uuid4().hex
     state = GoalRunState(
         run_id=run_id,
         session_id=session_id,
@@ -236,6 +273,8 @@ def run_until_done(
     previous_summary = ""
 
     for attempt_index in range(1, contract.retry_policy.max_attempts + 1):
+        if _state_requests_stop(state_path):
+            return _mark_stopped_by_user(state, state_path)
         if contract.max_runtime_seconds > 0 and (time.monotonic() - started_monotonic) > contract.max_runtime_seconds:
             state.status = "terminal_blocker"
             state.last_blocker_type = "max_runtime_exceeded"
@@ -274,7 +313,11 @@ def run_until_done(
         state.attempts_used = attempt_index
         state.last_attempt_summary = summary
         state.last_blocker_type = label if label != "completed" else ""
+        state.stop_requested = _state_requests_stop(state_path)
         state.updated_at = _utcnow()
+
+        if state.stop_requested:
+            return _mark_stopped_by_user(state, state_path)
 
         if label == "completed":
             state.status = "completed"
@@ -300,8 +343,8 @@ def run_until_done(
         if contract.retry_policy.backoff_seconds:
             idx = min(attempt_index - 1, len(contract.retry_policy.backoff_seconds) - 1)
             backoff = max(0, int(contract.retry_policy.backoff_seconds[idx]))
-        if backoff:
-            sleep_fn(backoff)
+        if backoff and _sleep_with_stop_check(backoff, state_path, sleep_fn):
+            return _mark_stopped_by_user(state, state_path)
 
     state.status = "budget_exhausted"
     state.last_blocker_type = "budget_exhausted"

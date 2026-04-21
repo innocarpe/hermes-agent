@@ -87,6 +87,9 @@ def adapter(monkeypatch):
     monkeypatch.setattr(discord_platform.discord, "DMChannel", FakeDMChannel, raising=False)
     monkeypatch.setattr(discord_platform.discord, "Thread", FakeThread, raising=False)
     monkeypatch.setattr(discord_platform.discord, "ForumChannel", FakeForumChannel, raising=False)
+    monkeypatch.delenv("DISCORD_ALLOWED_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_IGNORED_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_NO_THREAD_CHANNELS", raising=False)
 
     config = PlatformConfig(enabled=True, token="fake-token")
     adapter = DiscordAdapter(config)
@@ -172,7 +175,7 @@ async def test_discord_forum_threads_are_handled_as_threads(adapter, monkeypatch
     adapter.handle_message.assert_awaited_once()
     event = adapter.handle_message.await_args.args[0]
     assert event.text == "hello from forum post"
-    assert event.source.chat_id == "456"
+    assert event.source.chat_id == "222"
     assert event.source.thread_id == "456"
     assert event.source.chat_type == "thread"
     assert event.source.chat_name == "Hermes Server / support-forum / Can Hermes reply here?"
@@ -218,7 +221,7 @@ async def test_discord_forum_parent_in_free_response_list_allows_forum_thread(ad
     adapter.handle_message.assert_awaited_once()
     event = adapter.handle_message.await_args.args[0]
     assert event.text == "allowed from forum thread"
-    assert event.source.chat_id == "333"
+    assert event.source.chat_id == "222"
 
 
 @pytest.mark.asyncio

@@ -7,6 +7,7 @@ Covers the threading behavior control for multi-chunk replies:
 
 Also covers reply_to_text extraction from incoming messages.
 """
+import asyncio
 import os
 import sys
 from datetime import datetime, timezone
@@ -211,6 +212,82 @@ class TestSendWithReplyToMode:
         assert len(calls) == 2
         assert calls[0].kwargs.get("reference") is ref_msg
         assert calls[1].kwargs.get("reference") is None
+
+    @pytest.mark.asyncio
+    async def test_edit_message_uses_thread_id_metadata(self):
+        """Edits for thread replies must target the thread, not the parent channel."""
+        adapter, parent_channel, _ = _make_discord_adapter("first")
+
+        thread_channel = AsyncMock()
+        thread_message = AsyncMock()
+        thread_message.id = 4242
+        thread_channel.fetch_message = AsyncMock(return_value=thread_message)
+
+        adapter._client.get_channel = MagicMock(side_effect=lambda cid: thread_channel if int(cid) == 777 else parent_channel)
+        adapter._client.fetch_channel = AsyncMock(side_effect=lambda cid: thread_channel if int(cid) == 777 else parent_channel)
+
+        result = await adapter.edit_message(
+            "12345",
+            "4242",
+            "updated content",
+            metadata={"thread_id": "777"},
+        )
+
+        assert result.success is True
+        thread_channel.fetch_message.assert_awaited_once_with(4242)
+        thread_message.edit.assert_awaited_once()
+        parent_channel.fetch_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_send_typing_uses_thread_id_metadata(self):
+        """Typing indicator for thread replies must target the thread, not the parent channel."""
+        adapter, _, _ = _make_discord_adapter("first")
+        adapter._client.http = MagicMock()
+        adapter._client.http.request = AsyncMock(return_value=None)
+
+        with patch("gateway.platforms.discord.discord.http.Route", side_effect=lambda method, path, channel_id: SimpleNamespace(channel_id=str(channel_id))):
+            await adapter.send_typing("12345", metadata={"thread_id": "777"})
+            await asyncio.sleep(0)
+            await adapter.stop_typing("12345")
+
+        route = adapter._client.http.request.await_args.args[0]
+        assert route.channel_id == "777"
+
+    @pytest.mark.asyncio
+    async def test_create_new_thread_keeps_visible_seed_message(self):
+        """Fresh-thread delivery should anchor the parent channel with a visible seed message."""
+        adapter, channel, _ = _make_discord_adapter("first")
+        channel.parent = None
+
+        seed_msg = MagicMock()
+        seed_msg.id = 101
+        seed_msg.create_thread = AsyncMock()
+
+        thread = MagicMock()
+        thread.id = 202
+        thread.name = "Youtube 2026-04-17 벤치마크 · 09:53"
+        from types import SimpleNamespace
+        thread.send = AsyncMock(return_value=SimpleNamespace(id=303))
+        thread.join = AsyncMock()
+        seed_msg.create_thread.return_value = thread
+        channel.send = AsyncMock(return_value=seed_msg)
+
+        result = await adapter.send(
+            "1493267598597558334",
+            "full report body",
+            metadata={
+                "create_new_thread": True,
+                "thread_name": thread.name,
+                "auto_archive_duration": 1440,
+            },
+        )
+
+        assert result.success is True
+        channel.send.assert_awaited_once_with(thread.name)
+        seed_msg.create_thread.assert_awaited_once()
+        thread.send.assert_awaited_once_with("full report body")
+        assert result.raw_response["thread_id"] == "202"
+        assert result.raw_response["seed_message_id"] == "101"
 
 
 class TestConfigSerialization:

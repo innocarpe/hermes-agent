@@ -655,6 +655,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
         chat_id: str,
         message_id: str,
         content: str,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Edit a previously sent message via the WhatsApp bridge."""
         if not self._running or not self._http_session:

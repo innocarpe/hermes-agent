@@ -595,6 +595,8 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             )
             if isinstance(result, dict) and result.get("error"):
                 return result
+            if isinstance(result, dict) and result.get("success"):
+                result = {**result, "thread_id": result.get("thread_id") or new_thread_id}
             last_result = result
     else:
         for chunk in chunks:
@@ -800,17 +802,10 @@ async def _send_discord(token, chat_id, message, thread_id=None, media_files=Non
         # use the actual message body as the visible starter message so the
         # report is readable in the parent channel too.
         if create_new_thread:
+            # Fresh-thread deliveries should use the parent channel directly.
+            # thread_id is source context only and must not be required for
+            # thread creation, because the old thread may be archived or missing.
             parent_id = chat_id
-            if thread_id:
-                async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30), **_sess_kw) as session:
-                    async with session.get(
-                        f"https://discord.com/api/v10/channels/{thread_id}",
-                        headers=headers,
-                        **_req_kw,
-                    ) as resp:
-                        if resp.status == 200:
-                            data = await resp.json()
-                            parent_id = str(data.get("parent_id") or parent_id)
 
             thread_title = (thread_name or "Hermes Report").strip() or "Hermes Report"
             seed_content = thread_title

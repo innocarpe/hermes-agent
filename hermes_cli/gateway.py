@@ -6,6 +6,8 @@ Handles: hermes gateway [run|start|stop|restart|status|install|uninstall|setup]
 
 import asyncio
 import os
+import plistlib
+import re
 import shutil
 import signal
 import subprocess
@@ -926,23 +928,41 @@ def _normalize_service_definition(text: str) -> str:
     return "\n".join(line.rstrip() for line in text.strip().splitlines())
 
 
-def _normalize_launchd_plist_for_comparison(text: str) -> str:
-    """Normalize launchd plist text for staleness checks.
+def _normalize_launchd_plist_for_comparison(text: str) -> dict | str:
+    """Normalize launchd plist content for staleness checks.
 
-    The generated plist intentionally captures a broad PATH assembled from the
-    invoking shell so user-installed tools remain reachable under launchd.
-    That makes raw text comparison unstable across shells, so ignore the PATH
-    payload when deciding whether the installed plist is stale.
+    Compare launchd plists by parsed structure instead of raw text so harmless
+    whitespace/indentation drift does not trigger stale warnings. The generated
+    plist intentionally captures a broad PATH assembled from the invoking shell,
+    so normalize that field to a sentinel before comparing.
     """
-    import re
-
     normalized = _normalize_service_definition(text)
-    return re.sub(
-        r'(<key>PATH</key>\s*<string>)(.*?)(</string>)',
-        r'\1__HERMES_PATH__\3',
-        normalized,
-        flags=re.S,
-    )
+    try:
+        payload = plistlib.loads(normalized.encode("utf-8"))
+    except Exception:
+        return re.sub(
+            r'(<key>PATH</key>\s*<string>)(.*?)(</string>)',
+            r'\1__HERMES_PATH__\3',
+            normalized,
+            flags=re.S,
+        )
+
+    if not isinstance(payload, dict):
+        return re.sub(
+            r'(<key>PATH</key>\s*<string>)(.*?)(</string>)',
+            r'\1__HERMES_PATH__\3',
+            normalized,
+            flags=re.S,
+        )
+
+    env = payload.get("EnvironmentVariables")
+    if isinstance(env, dict) and "PATH" in env:
+        env = dict(env)
+        env["PATH"] = "__HERMES_PATH__"
+        payload = dict(payload)
+        payload["EnvironmentVariables"] = env
+
+    return payload
 
 
 def systemd_unit_is_current(system: bool = False) -> bool:

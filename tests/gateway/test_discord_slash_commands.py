@@ -323,8 +323,9 @@ async def test_handle_thread_create_slash_reports_failure(adapter):
 
 @pytest.mark.asyncio
 async def test_dispatch_thread_session_builds_thread_event(adapter):
-    """Dispatched event should have chat_type=thread and chat_id=thread_id."""
+    """Dispatched thread events should keep the parent channel as chat_id."""
     interaction = SimpleNamespace(
+        channel=SimpleNamespace(parent=SimpleNamespace(id=123), parent_id=123),
         user=SimpleNamespace(display_name="Jezza", id=42),
         guild=SimpleNamespace(name="TestGuild"),
     )
@@ -341,7 +342,7 @@ async def test_dispatch_thread_session_builds_thread_event(adapter):
     assert len(captured_events) == 1
     event = captured_events[0]
     assert event.text == "Hello!"
-    assert event.source.chat_id == "555"
+    assert event.source.chat_id == "123"
     assert event.source.chat_type == "thread"
     assert event.source.thread_id == "555"
     assert "TestGuild" in event.source.chat_name
@@ -354,7 +355,7 @@ async def test_dispatch_thread_session_builds_thread_event(adapter):
 
 def test_build_slash_event_preserves_thread_context(adapter):
     interaction = SimpleNamespace(
-        channel=_FakeThreadChannel(channel_id=555, name="Planning"),
+        channel=_FakeThreadChannel(channel_id=555, name="Planning", parent_id=123),
         channel_id=555,
         user=SimpleNamespace(display_name="Jezza", id=42),
     )
@@ -362,7 +363,7 @@ def test_build_slash_event_preserves_thread_context(adapter):
     event = adapter._build_slash_event(interaction, "/status")
 
     assert event.text == "/status"
-    assert event.source.chat_id == "555"
+    assert event.source.chat_id == "123"
     assert event.source.chat_type == "thread"
     assert event.source.thread_id == "555"
     assert "TestGuild" in event.source.chat_name
@@ -499,7 +500,7 @@ async def test_auto_thread_creates_thread_and_redirects(adapter, monkeypatch):
     adapter._auto_create_thread.assert_awaited_once_with(msg)
     assert len(captured_events) == 1
     event = captured_events[0]
-    assert event.source.chat_id == "999"  # redirected to thread
+    assert event.source.chat_id == "100"  # parent channel stays as the routing anchor
     assert event.source.chat_type == "thread"
     assert event.source.thread_id == "999"
 
@@ -526,7 +527,7 @@ async def test_auto_thread_enabled_by_default_slash_commands(adapter, monkeypatc
 
     adapter._auto_create_thread.assert_awaited_once()
     assert len(captured_events) == 1
-    assert captured_events[0].source.chat_id == "999"  # redirected to thread
+    assert captured_events[0].source.chat_id == "100"  # parent channel stays as the routing anchor
     assert captured_events[0].source.chat_type == "thread"
 
 
@@ -574,6 +575,10 @@ async def test_auto_thread_skips_threads_and_dms(adapter, monkeypatch):
     await adapter._handle_message(msg)
 
     adapter._auto_create_thread.assert_not_awaited()  # should NOT auto-thread
+    assert len(captured_events) == 1
+    assert captured_events[0].source.chat_id == "100"
+    assert captured_events[0].source.chat_type == "thread"
+    assert captured_events[0].source.thread_id == "200"
 
 
 # ------------------------------------------------------------------

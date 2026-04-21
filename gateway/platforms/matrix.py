@@ -738,7 +738,7 @@ class MatrixAdapter(BasePlatformAdapter):
                 pass
 
     async def edit_message(
-        self, chat_id: str, message_id: str, content: str
+        self, chat_id: str, message_id: str, content: str, metadata: Optional[Dict[str, Any]] = None
     ) -> SendResult:
         """Edit an existing message (via m.replace)."""
 

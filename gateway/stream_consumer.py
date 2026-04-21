@@ -603,6 +603,7 @@ class GatewayStreamConsumer:
                 chat_id=self.chat_id,
                 message_id=self._message_id,
                 content=prefix,
+                metadata=self.metadata,
             )
             self._last_sent_text = prefix
         except Exception:
@@ -676,6 +677,7 @@ class GatewayStreamConsumer:
                         chat_id=self.chat_id,
                         message_id=self._message_id,
                         content=text,
+                        metadata=self.metadata,
                     )
                     if result.success:
                         self._already_sent = True

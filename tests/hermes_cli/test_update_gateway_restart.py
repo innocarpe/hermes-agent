@@ -203,6 +203,31 @@ class TestLaunchdPlistCurrentness:
 
         assert gateway_cli.launchd_plist_is_current() is True
 
+    def test_launchd_plist_is_current_ignores_whitespace_only_drift(self, tmp_path, monkeypatch):
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+
+        current = gateway_cli.generate_launchd_plist()
+        whitespace_drift = current.replace("    <key>", "\t<key>").replace("    <string>", "\t<string>")
+        whitespace_drift = whitespace_drift.replace("\n\n", "\n")
+        plist_path.write_text(whitespace_drift, encoding="utf-8")
+
+        assert gateway_cli.launchd_plist_is_current() is True
+
+    def test_launchd_plist_is_current_detects_meaningful_drift(self, tmp_path, monkeypatch):
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+
+        current = gateway_cli.generate_launchd_plist()
+        changed = current.replace(
+            "gateway.error.log",
+            "different.error.log",
+            1,
+        )
+        plist_path.write_text(changed, encoding="utf-8")
+
+        assert gateway_cli.launchd_plist_is_current() is False
+
 
 # ---------------------------------------------------------------------------
 # cmd_update — macOS launchd detection

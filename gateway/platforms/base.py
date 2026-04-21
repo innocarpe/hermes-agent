@@ -1050,12 +1050,14 @@ class BasePlatformAdapter(ABC):
         chat_id: str,
         message_id: str,
         content: str,
+        metadata: Any = None,
     ) -> SendResult:
         """
         Edit a previously sent message. Optional — platforms that don't
         support editing return success=False and callers fall back to
         sending a new message.
         """
+        del metadata
         return SendResult(success=False, error="Not supported")
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:

@@ -916,12 +916,15 @@ class DiscordAdapter(BasePlatformAdapter):
         try:
             # Support fresh-thread delivery for cron jobs / reports.
             if metadata and metadata.get("create_new_thread"):
-                source_id = str((metadata.get("thread_id") or chat_id) or "")
+                # Fresh-thread deliveries should be anchored to the parent channel
+                # that was already resolved by cron (chat_id). Do not depend on an
+                # older thread_id being fetchable here — it is source context only.
+                source_id = str(chat_id)
                 source_channel = self._client.get_channel(int(source_id))
                 if not source_channel:
                     source_channel = await self._client.fetch_channel(int(source_id))
                 if not source_channel:
-                    return SendResult(success=False, error=f"Channel {source_id} not found")
+                    return SendResult(success=False, error=f"Parent channel {source_id} not found")
 
                 parent_channel = getattr(source_channel, "parent", None) or source_channel
                 thread_name = str(metadata.get("thread_name") or "Hermes Report").strip() or "Hermes Report"
@@ -932,19 +935,57 @@ class DiscordAdapter(BasePlatformAdapter):
                         self.channel = channel
                         self.user = type("User", (), {"display_name": display_name})()
 
-                result = await self._create_thread(
-                    _CronInteraction(parent_channel, "Hermes Cron"),
-                    name=thread_name,
-                    message=content,
-                    auto_archive_duration=auto_archive_duration,
-                )
-                if not result.get("success"):
-                    return SendResult(success=False, error=result.get("error", "unknown error"))
-                return SendResult(
-                    success=True,
-                    message_id=result.get("thread_id"),
-                    raw_response=result,
-                )
+                # Prefer the visibly anchored path first: post a short seed in the
+                # parent channel, create the thread from that seed, then post the
+                # actual report body into the thread. If that fails, fall back to
+                # the direct thread-creation helper so we still deliver something.
+                try:
+                    seed_content = thread_name
+                    seed_msg = await parent_channel.send(seed_content)
+                    thread = await seed_msg.create_thread(
+                        name=thread_name,
+                        auto_archive_duration=auto_archive_duration,
+                        reason=f"Requested by Hermes Cron via fresh-thread delivery",
+                    )
+                    starter_message = (content or "").strip()
+                    if starter_message:
+                        from gateway.platforms.base import BasePlatformAdapter
+                        chunks = BasePlatformAdapter.truncate_message(starter_message, self.MAX_MESSAGE_LENGTH)
+                        join = getattr(thread, "join", None)
+                        if callable(join):
+                            try:
+                                await join()
+                            except Exception:
+                                pass
+                        last_msg = None
+                        for chunk in chunks:
+                            last_msg = await thread.send(chunk)
+                    else:
+                        last_msg = None
+                    return SendResult(
+                        success=True,
+                        message_id=str(getattr(last_msg, "id", None) or getattr(seed_msg, "id", None) or thread.id),
+                        raw_response={
+                            "success": True,
+                            "thread_id": str(thread.id),
+                            "thread_name": getattr(thread, "name", None) or thread_name,
+                            "seed_message_id": str(getattr(seed_msg, "id", None)) if getattr(seed_msg, "id", None) is not None else None,
+                        },
+                    )
+                except Exception as visible_error:
+                    result = await self._create_thread(
+                        _CronInteraction(parent_channel, "Hermes Cron"),
+                        name=thread_name,
+                        message=content,
+                        auto_archive_duration=auto_archive_duration,
+                    )
+                    if not result.get("success"):
+                        return SendResult(success=False, error=result.get("error", f"fresh-thread delivery failed: {visible_error}"))
+                    return SendResult(
+                        success=True,
+                        message_id=result.get("thread_id"),
+                        raw_response=result,
+                    )
 
             # Determine target channel: thread_id in metadata takes precedence.
             thread_id = None
@@ -1025,14 +1066,16 @@ class DiscordAdapter(BasePlatformAdapter):
         chat_id: str,
         message_id: str,
         content: str,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Edit a previously sent Discord message."""
         if not self._client:
             return SendResult(success=False, error="Not connected")
         try:
-            channel = self._client.get_channel(int(chat_id))
+            target_id = str(metadata.get("thread_id")) if isinstance(metadata, dict) and metadata.get("thread_id") else str(chat_id)
+            channel = self._client.get_channel(int(target_id))
             if not channel:
-                channel = await self._client.fetch_channel(int(chat_id))
+                channel = await self._client.fetch_channel(int(target_id))
             msg = await channel.fetch_message(int(message_id))
             formatted = self.format_message(content)
             if len(formatted) > self.MAX_MESSAGE_LENGTH:
@@ -1659,13 +1702,15 @@ class DiscordAdapter(BasePlatformAdapter):
         if chat_id in self._typing_tasks:
             return
 
+        target_id = str(metadata.get("thread_id")) if isinstance(metadata, dict) and metadata.get("thread_id") else str(chat_id)
+
         async def _typing_loop() -> None:
             try:
                 while True:
                     try:
                         route = discord.http.Route(
                             "POST", "/channels/{channel_id}/typing",
-                            channel_id=chat_id,
+                            channel_id=target_id,
                         )
                         await self._client.http.request(route)
                     except asyncio.CancelledError:
@@ -2191,12 +2236,16 @@ class DiscordAdapter(BasePlatformAdapter):
         is_dm = isinstance(interaction.channel, discord.DMChannel)
         is_thread = isinstance(interaction.channel, discord.Thread)
         thread_id = None
+        chat_id = str(interaction.channel_id)
 
         if is_dm:
             chat_type = "dm"
         elif is_thread:
             chat_type = "thread"
             thread_id = str(interaction.channel_id)
+            parent_channel_id = self._get_parent_channel_id(interaction.channel)
+            if parent_channel_id:
+                chat_id = parent_channel_id
         else:
             chat_type = "group"
 
@@ -2211,7 +2260,7 @@ class DiscordAdapter(BasePlatformAdapter):
         chat_topic = self._get_effective_topic(interaction.channel, is_thread=is_thread)
 
         source = self.build_source(
-            chat_id=str(interaction.channel_id),
+            chat_id=chat_id,
             chat_name=chat_name,
             chat_type=chat_type,
             user_id=str(interaction.user.id),
@@ -2288,9 +2337,10 @@ class DiscordAdapter(BasePlatformAdapter):
         # Inherit forum topic when the thread was created inside a forum channel.
         _chan = getattr(interaction, "channel", None)
         chat_topic = self._get_effective_topic(_chan, is_thread=True) if _chan else None
+        parent_chat_id = self._get_parent_channel_id(_chan) or thread_id
 
         source = self.build_source(
-            chat_id=thread_id,
+            chat_id=parent_chat_id,
             chat_name=chat_name,
             chat_type="thread",
             user_id=str(interaction.user.id),
@@ -2830,6 +2880,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 if thread:
                     is_thread = True
                     thread_id = str(thread.id)
+                    parent_channel_id = self._get_parent_channel_id(thread) or str(message.channel.id)
                     auto_threaded_channel = thread
                     self._threads.mark(thread_id)
 
@@ -2878,8 +2929,11 @@ class DiscordAdapter(BasePlatformAdapter):
         chat_topic = self._get_effective_topic(message.channel, is_thread=is_thread)
 
         # Build source
+        source_chat_id = str(effective_channel.id)
+        if is_thread and parent_channel_id:
+            source_chat_id = parent_channel_id
         source = self.build_source(
-            chat_id=str(effective_channel.id),
+            chat_id=source_chat_id,
             chat_name=chat_name,
             chat_type=chat_type,
             user_id=str(message.author.id),

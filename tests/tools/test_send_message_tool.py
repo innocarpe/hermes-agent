@@ -537,6 +537,32 @@ class TestSendToPlatformChunking:
         third_call = send.await_args_list[2]
         assert third_call.kwargs["thread_id"] == "thread123"
 
+    def test_discord_fresh_thread_chunked_message_preserves_returned_thread_id(self):
+        """Fresh-thread chunking should keep the created thread_id in the final result."""
+        send = AsyncMock(
+            side_effect=[
+                {"success": True, "platform": "discord", "thread_id": "thread123", "message_id": "m1"},
+                {"success": True, "platform": "discord", "chat_id": "ch", "message_id": "m2"},
+                {"success": True, "platform": "discord", "chat_id": "ch", "message_id": "m3"},
+            ]
+        )
+        long_msg = "word " * 1000
+        with patch("tools.send_message_tool._send_discord", send):
+            result = asyncio.run(
+                _send_to_platform(
+                    Platform.DISCORD,
+                    SimpleNamespace(enabled=True, token="***", extra={}),
+                    "1493267598597558334",
+                    long_msg,
+                    thread_id="1493466324209242283",
+                    create_new_thread=True,
+                    thread_name="Youtube 2026/4/14 벤치마크",
+                )
+            )
+
+        assert result["success"] is True
+        assert result["thread_id"] == "thread123"
+
     def test_slack_messages_are_formatted_before_send(self, monkeypatch):
         _ensure_slack_mock(monkeypatch)
 

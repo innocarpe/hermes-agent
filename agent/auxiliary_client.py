@@ -1145,6 +1145,87 @@ def _is_connection_error(exc: Exception) -> bool:
     return False
 
 
+def _is_auth_error(exc: Exception) -> bool:
+    """Detect expired/invalid auth errors that warrant credential refresh.
+
+    Auxiliary clients can outlive short-lived OAuth/session tokens. When Codex,
+    Nous, or Anthropic OAuth-backed clients return HTTP 401/token_expired, we
+    should refresh credentials and retry the same provider before falling back
+    or surfacing a failure.
+    """
+    status = getattr(exc, "status_code", None)
+    if status == 401:
+        return True
+    err_lower = str(exc).lower()
+    return any(
+        kw in err_lower
+        for kw in (
+            "token_expired",
+            "provided authentication token is expired",
+            "authentication failed",
+            "invalid api key",
+            "unauthorized",
+            "invalid authentication",
+        )
+    )
+
+
+def _evict_cached_clients(provider: str) -> None:
+    """Drop cached auxiliary clients for a provider so fresh creds are used."""
+    normalized = _normalize_aux_provider(provider)
+    with _client_cache_lock:
+        stale_keys = [key for key in _client_cache if _normalize_aux_provider(str(key[0])) == normalized]
+        for key in stale_keys:
+            client = _client_cache.get(key, (None, None, None))[0]
+            if client is not None:
+                _force_close_async_httpx(client)
+                try:
+                    close_fn = getattr(client, "close", None)
+                    if callable(close_fn):
+                        close_fn()
+                except Exception:
+                    pass
+            _client_cache.pop(key, None)
+
+
+def _refresh_provider_credentials(provider: str) -> bool:
+    """Refresh short-lived credentials for OAuth-backed auxiliary providers."""
+    normalized = _normalize_aux_provider(provider)
+    try:
+        if normalized == "openai-codex":
+            from hermes_cli.auth import resolve_codex_runtime_credentials
+
+            creds = resolve_codex_runtime_credentials(force_refresh=True)
+            if not str(creds.get("api_key", "") or "").strip():
+                return False
+            _evict_cached_clients(normalized)
+            return True
+        if normalized == "nous":
+            from hermes_cli.auth import resolve_nous_runtime_credentials
+
+            creds = resolve_nous_runtime_credentials(
+                min_key_ttl_seconds=max(60, int(os.getenv("HERMES_NOUS_MIN_KEY_TTL_SECONDS", "1800"))),
+                timeout_seconds=float(os.getenv("HERMES_NOUS_TIMEOUT_SECONDS", "15")),
+                force_mint=True,
+            )
+            if not str(creds.get("api_key", "") or "").strip():
+                return False
+            _evict_cached_clients(normalized)
+            return True
+        if normalized == "anthropic":
+            from agent.anthropic_adapter import resolve_anthropic_token
+
+            token = resolve_anthropic_token()
+            if not str(token or "").strip():
+                return False
+            _evict_cached_clients(normalized)
+            return True
+    except Exception as exc:
+        logger.debug("Auxiliary provider credential refresh failed for %s: %s", normalized, exc)
+        return False
+    return False
+
+
 def _try_payment_fallback(
     failed_provider: str,
     task: str = None,
@@ -2500,6 +2581,50 @@ def call_llm(
                     raise
                 first_err = retry_err
 
+        # ── Auth refresh retry ───────────────────────────────────────
+        # Auxiliary clients are cached and can outlive short-lived OAuth/session
+        # tokens. Refresh the same provider once on 401/token_expired before
+        # trying broader fallback logic.
+        if _is_auth_error(first_err) and resolved_provider not in ("auto", "", None):
+            if _refresh_provider_credentials(resolved_provider):
+                logger.info(
+                    "Auxiliary %s: refreshed %s credentials after auth error, retrying",
+                    task or "call", resolved_provider,
+                )
+                retry_client, retry_model = (
+                    resolve_vision_provider_client(
+                        provider=resolved_provider,
+                        model=final_model,
+                        async_mode=False,
+                    )[1:]
+                    if task == "vision"
+                    else _get_cached_client(
+                        resolved_provider,
+                        resolved_model,
+                        base_url=resolved_base_url,
+                        api_key=resolved_api_key,
+                        api_mode=resolved_api_mode,
+                        main_runtime=main_runtime,
+                    )
+                )
+                if retry_client is not None:
+                    retry_kwargs = _build_call_kwargs(
+                        resolved_provider,
+                        retry_model or final_model,
+                        messages,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                        tools=tools,
+                        timeout=effective_timeout,
+                        extra_body=extra_body,
+                        base_url=resolved_base_url,
+                    )
+                    _retry_base = str(getattr(retry_client, "base_url", "") or "")
+                    if _is_anthropic_compat_endpoint(resolved_provider, _retry_base):
+                        retry_kwargs["messages"] = _convert_openai_images_to_anthropic(retry_kwargs["messages"])
+                    return _validate_llm_response(
+                        retry_client.chat.completions.create(**retry_kwargs), task)
+
         # ── Payment / credit exhaustion fallback ──────────────────────
         # When the resolved provider returns 402 or a credit-related error,
         # try alternative providers instead of giving up.  This handles the
@@ -2691,6 +2816,46 @@ async def async_call_llm(
                 if not (_is_payment_error(retry_err) or _is_connection_error(retry_err)):
                     raise
                 first_err = retry_err
+
+        # ── Auth refresh retry (mirrors sync call_llm) ───────────────
+        if _is_auth_error(first_err) and resolved_provider not in ("auto", "", None):
+            if _refresh_provider_credentials(resolved_provider):
+                logger.info(
+                    "Auxiliary %s (async): refreshed %s credentials after auth error, retrying",
+                    task or "call", resolved_provider,
+                )
+                if task == "vision":
+                    _, retry_client, retry_model = resolve_vision_provider_client(
+                        provider=resolved_provider,
+                        model=final_model,
+                        async_mode=True,
+                    )
+                else:
+                    retry_client, retry_model = _get_cached_client(
+                        resolved_provider,
+                        resolved_model,
+                        async_mode=True,
+                        base_url=resolved_base_url,
+                        api_key=resolved_api_key,
+                        api_mode=resolved_api_mode,
+                    )
+                if retry_client is not None:
+                    retry_kwargs = _build_call_kwargs(
+                        resolved_provider,
+                        retry_model or final_model,
+                        messages,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                        tools=tools,
+                        timeout=effective_timeout,
+                        extra_body=extra_body,
+                        base_url=resolved_base_url,
+                    )
+                    _retry_base = str(getattr(retry_client, "base_url", "") or "")
+                    if _is_anthropic_compat_endpoint(resolved_provider, _retry_base):
+                        retry_kwargs["messages"] = _convert_openai_images_to_anthropic(retry_kwargs["messages"])
+                    return _validate_llm_response(
+                        await retry_client.chat.completions.create(**retry_kwargs), task)
 
         # ── Payment / connection fallback (mirrors sync call_llm) ─────
         should_fallback = _is_payment_error(first_err) or _is_connection_error(first_err)

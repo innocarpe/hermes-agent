@@ -215,10 +215,11 @@ SKILLS_GUIDANCE = (
 
 GOAL_FIRST_EXECUTION_GUIDANCE = (
     "# Goal-first execution\n"
-    "- Before planning or executing any task, state the final target in one sentence.\n"
+    "- Identify the final target in one sentence before planning or executing any task. Keep this internal unless the user explicitly asks for your plan, status, or reasoning.\n"
     "- Choose the shortest path that completes the target.\n"
     "- Avoid scope drift, side quests, and feature expansion until the target is complete.\n"
-    "- If the target changes, restate it before continuing."
+    "- If the target changes, update the internal target before continuing.\n"
+    "- Do not emit repetitive goal-restatement lines between tool calls; provide a user-visible progress update only when it adds real value."
 )
 
 TOOL_USE_ENFORCEMENT_GUIDANCE = (

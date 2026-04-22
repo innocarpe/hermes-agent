@@ -98,6 +98,33 @@ def _repeat_display(job: Dict[str, Any]) -> str:
     return f"{completed}/{times}" if completed else f"{times} times"
 
 
+def _freeze_thread_sensitive_origin_delivery(
+    deliver: Optional[str],
+    origin: Optional[Dict[str, Any]],
+) -> Optional[str]:
+    """Convert origin delivery to an explicit thread target when needed.
+
+    In Discord/Telegram threaded contexts, `deliver='origin'` can become fragile if
+    the stored origin metadata is missing or not available later. Snapshot the
+    concrete target at create/update time so the job keeps delivering to the same
+    thread/topic deterministically.
+    """
+    normalized = (deliver or "").strip().lower() if isinstance(deliver, str) else deliver
+    if normalized not in (None, "", "origin"):
+        return deliver
+    if not origin:
+        return deliver
+
+    platform = str(origin.get("platform") or "").strip().lower()
+    chat_id = str(origin.get("chat_id") or "").strip()
+    thread_id = str(origin.get("thread_id") or "").strip()
+    if not (platform and chat_id and thread_id):
+        return deliver
+    if platform not in {"discord", "telegram"}:
+        return deliver
+    return f"{platform}:{chat_id}:{thread_id}"
+
+
 def _canonical_skills(skill: Optional[str] = None, skills: Optional[Any] = None) -> List[str]:
     if skills is None:
         raw_items = [skill] if skill else []
@@ -259,13 +286,16 @@ def cronjob(
                 if script_error:
                     return tool_error(script_error, success=False)
 
+            origin = _origin_from_env()
+            effective_deliver = _freeze_thread_sensitive_origin_delivery(deliver, origin)
+
             job = create_job(
                 prompt=prompt or "",
                 schedule=schedule,
                 name=name,
                 repeat=repeat,
-                deliver=deliver,
-                origin=_origin_from_env(),
+                deliver=effective_deliver,
+                origin=origin,
                 skills=canonical_skills,
                 model=_normalize_optional_job_value(model),
                 provider=_normalize_optional_job_value(provider),
@@ -342,7 +372,8 @@ def cronjob(
             if name is not None:
                 updates["name"] = name
             if deliver is not None:
-                updates["deliver"] = deliver
+                current_origin = _origin_from_env() or job.get("origin")
+                updates["deliver"] = _freeze_thread_sensitive_origin_delivery(deliver, current_origin)
             if skills is not None or skill is not None:
                 canonical_skills = _canonical_skills(skill, skills)
                 updates["skills"] = canonical_skills

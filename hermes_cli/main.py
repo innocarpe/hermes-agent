@@ -5054,8 +5054,18 @@ For more help on a command:
     # gateway status
     gateway_status = gateway_subparsers.add_parser("status", help="Show gateway status")
     gateway_status.add_argument("--deep", action="store_true", help="Deep status check")
-    gateway_status.add_argument("--system", action="store_true", help="Target the Linux system-level gateway service")
-    
+    gateway_status.add_argument(
+        "-l",
+        "--full",
+        action="store_true",
+        help="Show full, untruncated service/log output where supported",
+    )
+    gateway_status.add_argument(
+        "--system",
+        action="store_true",
+        help="Target the Linux system-level gateway service",
+    )
+
     # gateway install
     gateway_install = gateway_subparsers.add_parser("install", help="Install gateway as a systemd/launchd background service")
     gateway_install.add_argument("--force", action="store_true", help="Force reinstall")

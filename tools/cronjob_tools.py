@@ -68,12 +68,58 @@ def _scan_cron_prompt(prompt: str) -> str:
     return ""
 
 
+def _thread_id_from_session_key(session_key: Optional[str], origin_platform: Optional[str], origin_chat_id: Optional[str]) -> Optional[str]:
+    """Best-effort recovery of thread_id from the gateway session key.
+
+    Cron jobs created from Discord/Telegram threads must keep the concrete thread/topic
+    target. In rare cases the dedicated ``HERMES_SESSION_THREAD_ID`` context var can be
+    blank while ``HERMES_SESSION_KEY`` still carries the full thread-scoped routing key
+    (for example ``agent:main:discord:thread:<chat_id>:<thread_id>``). Recover the
+    thread/topic from the session key so origin delivery does not silently fall back to a
+    parent/home channel.
+    """
+    if not session_key or not origin_platform or not origin_chat_id:
+        return None
+    if origin_platform not in {"discord", "telegram"}:
+        return None
+
+    parts = [part.strip() for part in str(session_key).split(":") if part.strip()]
+    if len(parts) < 6:
+        return None
+
+    # Expected shared-thread form: agent:main:<platform>:thread:<chat_id>:<thread_id>
+    # Per-user thread sessions may have extra suffixes after thread_id; keep the first
+    # routing-specific segment only.
+    if parts[0] != "agent" or parts[1] != "main":
+        return None
+    if parts[2] != str(origin_platform).strip().lower():
+        return None
+    if parts[3] != "thread":
+        return None
+    if parts[4] != str(origin_chat_id).strip():
+        return None
+    return parts[5] or None
+
+
 def _origin_from_env() -> Optional[Dict[str, str]]:
     from gateway.session_context import get_session_env
     origin_platform = get_session_env("HERMES_SESSION_PLATFORM")
     origin_chat_id = get_session_env("HERMES_SESSION_CHAT_ID")
     if origin_platform and origin_chat_id:
         thread_id = get_session_env("HERMES_SESSION_THREAD_ID") or None
+        if not thread_id:
+            thread_id = _thread_id_from_session_key(
+                get_session_env("HERMES_SESSION_KEY") or None,
+                origin_platform,
+                origin_chat_id,
+            )
+            if thread_id:
+                logger.info(
+                    "Recovered cron origin thread_id=%s from session key for %s:%s",
+                    thread_id,
+                    origin_platform,
+                    origin_chat_id,
+                )
         if thread_id:
             logger.debug(
                 "Cron origin captured thread_id=%s for %s:%s",

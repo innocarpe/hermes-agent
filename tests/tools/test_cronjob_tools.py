@@ -6,7 +6,9 @@ from pathlib import Path
 
 from tools.cronjob_tools import (
     _freeze_thread_sensitive_origin_delivery,
+    _origin_from_env,
     _scan_cron_prompt,
+    _thread_id_from_session_key,
     check_cronjob_requirements,
     cronjob,
 )
@@ -100,6 +102,32 @@ class TestCronjobRequirements:
 
 
 class TestFreezeThreadSensitiveOriginDelivery:
+    def test_recovers_thread_id_from_shared_thread_session_key(self):
+        thread_id = _thread_id_from_session_key(
+            "agent:main:discord:thread:1493169190197268510:1496442171748913253",
+            "discord",
+            "1493169190197268510",
+        )
+        assert thread_id == "1496442171748913253"
+
+    def test_origin_from_env_recovers_thread_id_from_session_key(self, monkeypatch):
+        monkeypatch.setenv("HERMES_SESSION_PLATFORM", "discord")
+        monkeypatch.setenv("HERMES_SESSION_CHAT_ID", "1493169190197268510")
+        monkeypatch.setenv("HERMES_SESSION_CHAT_NAME", "Home")
+        monkeypatch.delenv("HERMES_SESSION_THREAD_ID", raising=False)
+        monkeypatch.setenv(
+            "HERMES_SESSION_KEY",
+            "agent:main:discord:thread:1493169190197268510:1496442171748913253",
+        )
+
+        origin = _origin_from_env()
+        assert origin == {
+            "platform": "discord",
+            "chat_id": "1493169190197268510",
+            "chat_name": "Home",
+            "thread_id": "1496442171748913253",
+        }
+
     def test_freezes_discord_thread_origin_to_explicit_target(self):
         result = _freeze_thread_sensitive_origin_delivery(
             "origin",

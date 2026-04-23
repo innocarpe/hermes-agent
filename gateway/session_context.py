@@ -17,9 +17,11 @@ silently overwritten by Message B before Message A's agent finished
 running.  Background-task notifications and tool calls therefore routed
 to the wrong thread.
 
-``contextvars.ContextVar`` values are *task-local*: each ``asyncio``
-task (and any ``run_in_executor`` thread it spawns) gets its own copy,
-so concurrent messages never interfere.
+``contextvars.ContextVar`` values are *task-local* within the active
+``asyncio`` task. When Hermes hands work to ``run_in_executor`` it must
+explicitly copy that context into the worker thread, otherwise tools that
+read ``HERMES_SESSION_*`` fall back to process-global ``os.environ`` and
+can route to the wrong chat/thread.
 
 **Backward compatibility**
 
@@ -36,8 +38,11 @@ needs to replace the import + call site:
     platform = get_session_env("HERMES_SESSION_PLATFORM", "")
 """
 
-from contextvars import ContextVar
-from typing import Any
+from contextvars import ContextVar, copy_context
+from functools import wraps
+from typing import Any, Callable, TypeVar, cast
+
+F = TypeVar("F", bound=Callable[..., Any])
 
 # Sentinel to distinguish "never set in this context" from "explicitly set to empty".
 # When a contextvar holds _UNSET, we fall back to os.environ (CLI/cron compat).
@@ -143,3 +148,20 @@ def get_session_env(name: str, default: str = "") -> str:
             return value
     # Fall back to os.environ for CLI, cron, and test compatibility
     return os.getenv(name, default)
+
+
+def bind_current_context(fn: F) -> F:
+    """Return a callable that replays the current contextvars context.
+
+    Use this before handing synchronous work to ``run_in_executor`` so
+    gateway session routing (platform/chat/thread/session key) stays bound to
+    the originating async task inside the worker thread.
+    """
+
+    ctx = copy_context()
+
+    @wraps(fn)
+    def _wrapped(*args, **kwargs):
+        return ctx.run(fn, *args, **kwargs)
+
+    return cast(F, _wrapped)

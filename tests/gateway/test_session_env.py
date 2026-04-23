@@ -7,12 +7,15 @@ from gateway.config import Platform
 from gateway.run import GatewayRunner
 from gateway.session import SessionContext, SessionSource
 from gateway.session_context import (
+    bind_current_context,
+    clear_session_vars,
     get_session_env,
     set_session_vars,
     clear_session_vars,
     _VAR_MAP,
     _UNSET,
 )
+from tools.cronjob_tools import _origin_from_env
 
 
 @pytest.fixture(autouse=True)
@@ -190,9 +193,10 @@ def test_session_key_falls_back_to_os_environ(monkeypatch):
     assert get_session_env("HERMES_SESSION_KEY") == ""
 
 
-def test_set_session_env_includes_session_key():
+def test_set_session_env_includes_session_key(monkeypatch):
     """_set_session_env should propagate session_key from SessionContext."""
     runner = object.__new__(GatewayRunner)
+    monkeypatch.delenv("HERMES_SESSION_KEY", raising=False)
     source = SessionSource(
         platform=Platform.TELEGRAM,
         chat_id="-1001",

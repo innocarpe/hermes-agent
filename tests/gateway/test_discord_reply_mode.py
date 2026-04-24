@@ -47,14 +47,15 @@ def _ensure_discord_mock():
     commands_mod.Bot = MagicMock
     ext_mod.commands = commands_mod
 
-    sys.modules.setdefault("discord", discord_mod)
-    sys.modules.setdefault("discord.ext", ext_mod)
-    sys.modules.setdefault("discord.ext.commands", commands_mod)
+    sys.modules["discord"] = discord_mod
+    sys.modules["discord.ext"] = ext_mod
+    sys.modules["discord.ext.commands"] = commands_mod
 
 
 _ensure_discord_mock()
 
-from gateway.platforms.discord import DiscordAdapter  # noqa: E402
+import gateway.platforms.discord as discord_platform  # noqa: E402
+DiscordAdapter = discord_platform.DiscordAdapter  # noqa: E402
 
 
 @pytest.fixture()
@@ -397,6 +398,9 @@ def _make_message(*, content: str = "hi", reference=None):
 @pytest.fixture
 def reply_text_adapter(monkeypatch):
     """DiscordAdapter wired for _handle_message → handle_message capture."""
+    monkeypatch.setattr(discord_platform.discord, "DMChannel", FakeDMChannel, raising=False)
+    monkeypatch.setattr(discord_platform.discord, "Thread", type("Thread", (), {}), raising=False)
+    monkeypatch.setattr(discord_platform.discord, "ForumChannel", type("ForumChannel", (), {}), raising=False)
     config = PlatformConfig(enabled=True, token="fake-token")
     adapter = DiscordAdapter(config)
     adapter._client = SimpleNamespace(user=SimpleNamespace(id=999))

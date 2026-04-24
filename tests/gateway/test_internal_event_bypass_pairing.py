@@ -19,6 +19,15 @@ from gateway.run import GatewayRunner
 from gateway.session import SessionSource
 
 
+@pytest.fixture(autouse=True)
+def _isolate_pairing_dir(monkeypatch, tmp_path):
+    import gateway.pairing as pairing_mod
+
+    pairing_dir = tmp_path / "pairing"
+    pairing_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(pairing_mod, "PAIRING_DIR", pairing_dir)
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

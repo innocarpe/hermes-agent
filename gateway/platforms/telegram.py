@@ -2787,9 +2787,12 @@ class TelegramAdapter(BasePlatformAdapter):
         
         # Determine chat type
         chat_type = "dm"
-        if chat.type in (ChatType.GROUP, ChatType.SUPERGROUP):
+        _raw_type = getattr(chat, "type", None)
+        _type_value = getattr(_raw_type, "value", _raw_type)
+        _type_text = str(_type_value).split(".")[-1].lower()
+        if _type_text in ("group", "supergroup") or _raw_type in (ChatType.GROUP, ChatType.SUPERGROUP):
             chat_type = "group"
-        elif chat.type == ChatType.CHANNEL:
+        elif _type_text == "channel" or _raw_type == ChatType.CHANNEL:
             chat_type = "channel"
 
         # Resolve DM topic name and skill binding

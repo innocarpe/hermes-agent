@@ -77,12 +77,13 @@ def _ensure_telegram_mock():
     telegram_mod.constants.ChatType.PRIVATE = "private"
 
     for name in ("telegram", "telegram.ext", "telegram.constants", "telegram.request"):
-        sys.modules.setdefault(name, telegram_mod)
+        sys.modules[name] = telegram_mod
 
 
 _ensure_telegram_mock()
 
-from gateway.platforms.telegram import TelegramAdapter  # noqa: E402
+import gateway.platforms.telegram as telegram_platform  # noqa: E402
+TelegramAdapter = telegram_platform.TelegramAdapter  # noqa: E402
 
 
 class TestTelegramSendImageFile:
@@ -184,13 +185,14 @@ def _ensure_discord_mock():
     discord_mod.File = MagicMock
 
     for name in ("discord", "discord.ext", "discord.ext.commands"):
-        sys.modules.setdefault(name, discord_mod)
+        sys.modules[name] = discord_mod
 
 
 _ensure_discord_mock()
 
 import discord as discord_mod_ref  # noqa: E402
-from gateway.platforms.discord import DiscordAdapter  # noqa: E402
+import gateway.platforms.discord as discord_platform  # noqa: E402
+DiscordAdapter = discord_platform.DiscordAdapter  # noqa: E402
 
 
 class TestDiscordSendImageFile:
@@ -230,7 +232,7 @@ class TestDiscordSendImageFile:
         mock_channel.send = AsyncMock(return_value=mock_msg)
         adapter._client.get_channel = MagicMock(return_value=mock_channel)
 
-        with patch.object(discord_mod_ref, "File", MagicMock()) as file_cls:
+        with patch.object(discord_platform.discord, "File", MagicMock()) as file_cls:
             result = _run(
                 adapter.send_document(
                     chat_id="67890",
@@ -256,7 +258,7 @@ class TestDiscordSendImageFile:
         mock_channel.send = AsyncMock(return_value=mock_msg)
         adapter._client.get_channel = MagicMock(return_value=mock_channel)
 
-        with patch.object(discord_mod_ref, "File", MagicMock()) as file_cls:
+        with patch.object(discord_platform.discord, "File", MagicMock()) as file_cls:
             result = _run(
                 adapter.send_video(
                     chat_id="67890",

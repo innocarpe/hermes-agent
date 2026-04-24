@@ -560,6 +560,10 @@ def load_gateway_config() -> GatewayConfig:
                         bridged["channel_prompts"] = {str(k): v for k, v in channel_prompts.items()}
                     else:
                         bridged["channel_prompts"] = channel_prompts
+                if plat == Platform.DISCORD and "bootstrap_channels" in platform_cfg:
+                    bridged["bootstrap_channels"] = platform_cfg["bootstrap_channels"]
+                if plat == Platform.DISCORD and "bootstrap_guild_id" in platform_cfg:
+                    bridged["bootstrap_guild_id"] = platform_cfg["bootstrap_guild_id"]
                 if not bridged:
                     continue
                 plat_data = platforms_data.setdefault(plat.value, {})
@@ -617,11 +621,6 @@ def load_gateway_config() -> GatewayConfig:
                     if isinstance(ntc, list):
                         ntc = ",".join(str(v) for v in ntc)
                     os.environ["DISCORD_NO_THREAD_CHANNELS"] = str(ntc)
-                # Bootstrap workspace channels: preserved as platform.extra for the Discord adapter.
-                if "bootstrap_channels" in discord_cfg:
-                    bridged["bootstrap_channels"] = discord_cfg["bootstrap_channels"]
-                if "bootstrap_guild_id" in discord_cfg:
-                    bridged["bootstrap_guild_id"] = discord_cfg["bootstrap_guild_id"]
 
             # Telegram settings → env vars (env vars take precedence)
             telegram_cfg = yaml_cfg.get("telegram", {})

@@ -4392,6 +4392,9 @@ class GatewayRunner:
         # the configured default instead of the previously switched model.
         self._session_model_overrides.pop(session_key, None)
 
+        # Clear session-scoped dangerous-command approvals and /yolo state.
+        self._clear_session_boundary_security_state(session_key)
+
         # Fire plugin on_session_finalize hook (session boundary)
         try:
             from hermes_cli.plugins import invoke_hook as _invoke_hook
@@ -6449,6 +6452,7 @@ class GatewayRunner:
         new_entry = self.session_store.switch_session(session_key, target_id)
         if not new_entry:
             return "Failed to switch session."
+        self._clear_session_boundary_security_state(session_key)
 
         # Get the title for confirmation
         title = self._session_db.get_session_title(target_id) or name
@@ -6537,6 +6541,7 @@ class GatewayRunner:
         new_entry = self.session_store.switch_session(session_key, new_session_id)
         if not new_entry:
             return "Branch created but failed to switch to it."
+        self._clear_session_boundary_security_state(session_key)
 
         # Evict any cached agent for this session
         self._evict_cached_agent(session_key)
@@ -7866,6 +7871,29 @@ class GatewayRunner:
             with _lock:
                 self._agent_cache.pop(session_key, None)
 
+    def _clear_session_boundary_security_state(self, session_key: str) -> None:
+        """Clear approval state that must not survive a real conversation switch."""
+        if not session_key:
+            return
+
+        pending_approvals = getattr(self, "_pending_approvals", None)
+        if isinstance(pending_approvals, dict):
+            pending_approvals.pop(session_key, None)
+
+        try:
+            from tools.approval import clear_session as _clear_approval_session
+        except Exception:
+            return
+
+        try:
+            _clear_approval_session(session_key)
+        except Exception as e:
+            logger.debug(
+                "Failed to clear approval state for session boundary %s: %s",
+                session_key,
+                e,
+            )
+
     # ------------------------------------------------------------------
     # Proxy mode: forward messages to a remote Hermes API server
     # ------------------------------------------------------------------
@@ -8348,12 +8376,19 @@ class GatewayRunner:
                     if can_edit and progress_msg_id is not None:
                         # Try to edit the existing progress message
                         full_text = "\n".join(progress_lines)
-                        result = await adapter.edit_message(
-                            chat_id=source.chat_id,
-                            message_id=progress_msg_id,
-                            content=full_text,
-                            metadata=_progress_metadata,
-                        )
+                        try:
+                            result = await adapter.edit_message(
+                                chat_id=source.chat_id,
+                                message_id=progress_msg_id,
+                                content=full_text,
+                                metadata=_progress_metadata,
+                            )
+                        except TypeError:
+                            result = await adapter.edit_message(
+                                chat_id=source.chat_id,
+                                message_id=progress_msg_id,
+                                content=full_text,
+                            )
                         if not result.success:
                             _err = (getattr(result, "error", "") or "").lower()
                             if "flood" in _err or "retry after" in _err:
@@ -8402,12 +8437,19 @@ class GatewayRunner:
                     if can_edit and progress_lines and progress_msg_id:
                         full_text = "\n".join(progress_lines)
                         try:
-                            await adapter.edit_message(
-                                chat_id=source.chat_id,
-                                message_id=progress_msg_id,
-                                content=full_text,
-                                metadata=_progress_metadata,
-                            )
+                            try:
+                                await adapter.edit_message(
+                                    chat_id=source.chat_id,
+                                    message_id=progress_msg_id,
+                                    content=full_text,
+                                    metadata=_progress_metadata,
+                                )
+                            except TypeError:
+                                await adapter.edit_message(
+                                    chat_id=source.chat_id,
+                                    message_id=progress_msg_id,
+                                    content=full_text,
+                                )
                         except Exception:
                             pass
                     return

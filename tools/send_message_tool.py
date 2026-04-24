@@ -412,14 +412,12 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     from gateway.platforms.discord import DiscordAdapter
     from gateway.platforms.slack import SlackAdapter
 
-    # Telegram adapter import is optional (requires python-telegram-bot)
     try:
         from gateway.platforms.telegram import TelegramAdapter
         _telegram_available = True
     except ImportError:
         _telegram_available = False
 
-    # Feishu adapter import is optional (requires lark-oapi)
     try:
         from gateway.platforms.feishu import FeishuAdapter
         _feishu_available = True
@@ -435,7 +433,6 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
         except Exception:
             logger.debug("Failed to apply Slack mrkdwn formatting in _send_to_platform", exc_info=True)
 
-    # Platform message length limits (from adapter class attributes)
     _MAX_LENGTHS = {
         Platform.TELEGRAM: TelegramAdapter.MAX_MESSAGE_LENGTH if _telegram_available else 4096,
         Platform.DISCORD: DiscordAdapter.MAX_MESSAGE_LENGTH,
@@ -444,9 +441,6 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     if _feishu_available:
         _MAX_LENGTHS[Platform.FEISHU] = FeishuAdapter.MAX_MESSAGE_LENGTH
 
-    # Smart-chunk the message to fit within platform limits.
-    # For short messages or platforms without a known limit this is a no-op.
-    # Telegram measures length in UTF-16 code units, not Unicode codepoints.
     max_len = _MAX_LENGTHS.get(platform)
     if max_len:
         _len_fn = utf16_len if platform == Platform.TELEGRAM else None
@@ -454,12 +448,11 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     else:
         chunks = [message]
 
-    # --- Telegram: special handling for media attachments ---
     if platform == Platform.TELEGRAM:
         last_result = None
         disable_link_previews = bool(getattr(pconfig, "extra", {}) and pconfig.extra.get("disable_link_previews"))
         for i, chunk in enumerate(chunks):
-            is_last = (i == len(chunks) - 1)
+            is_last = i == len(chunks) - 1
             result = await _send_telegram(
                 pconfig.token,
                 chat_id,
@@ -473,32 +466,78 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             last_result = result
         return last_result
 
-    # --- Weixin: use the native one-shot adapter helper for text + media ---
     if platform == Platform.WEIXIN:
         return await _send_weixin(pconfig, chat_id, message, media_files=media_files)
 
-    # --- Discord: special handling for media attachments ---
     if platform == Platform.DISCORD:
+        if not chunks:
+            chunks = [""]
+
+        if create_new_thread:
+            first_kwargs = {
+                "thread_id": thread_id,
+                "media_files": media_files if len(chunks) == 1 else [],
+                "create_new_thread": True,
+            }
+            if thread_name:
+                first_kwargs["thread_name"] = thread_name
+            if auto_archive_duration != 1440:
+                first_kwargs["auto_archive_duration"] = auto_archive_duration
+            first_result = await _send_discord(
+                pconfig.token,
+                chat_id,
+                chunks[0],
+                **first_kwargs,
+            )
+            if isinstance(first_result, dict) and first_result.get("error"):
+                return first_result
+
+            new_thread_id = first_result.get("thread_id") if isinstance(first_result, dict) else None
+            if not new_thread_id:
+                return {"error": "Discord fresh-thread delivery did not return a thread_id"}
+
+            last_result = first_result
+            for i, chunk in enumerate(chunks[1:], start=1):
+                is_last = i == len(chunks) - 1
+                next_kwargs = {
+                    "thread_id": new_thread_id,
+                    "media_files": media_files if is_last else [],
+                    "create_new_thread": False,
+                }
+                result = await _send_discord(
+                    pconfig.token,
+                    chat_id,
+                    chunk,
+                    **next_kwargs,
+                )
+                if isinstance(result, dict) and result.get("error"):
+                    return result
+                if isinstance(result, dict) and result.get("success"):
+                    result = {**result, "thread_id": result.get("thread_id") or new_thread_id}
+                last_result = result
+            if isinstance(last_result, dict) and last_result.get("success") and "thread_id" not in last_result:
+                last_result = {**last_result, "thread_id": new_thread_id}
+            return last_result
+
         last_result = None
         for i, chunk in enumerate(chunks):
-            is_last = (i == len(chunks) - 1)
+            is_last = i == len(chunks) - 1
             result = await _send_discord(
                 pconfig.token,
                 chat_id,
                 chunk,
-                media_files=media_files if is_last else [],
                 thread_id=thread_id,
+                media_files=media_files if is_last else [],
             )
             if isinstance(result, dict) and result.get("error"):
                 return result
             last_result = result
         return last_result
 
-    # --- Matrix: use the native adapter helper when media is present ---
     if platform == Platform.MATRIX and media_files:
         last_result = None
         for i, chunk in enumerate(chunks):
-            is_last = (i == len(chunks) - 1)
+            is_last = i == len(chunks) - 1
             result = await _send_matrix_via_adapter(
                 pconfig,
                 chat_id,
@@ -511,7 +550,6 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             last_result = result
         return last_result
 
-    # --- Non-Telegram/Discord platforms ---
     if media_files and not message.strip():
         return {
             "error": (
@@ -519,6 +557,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
                 f"target {platform.value} had only media attachments"
             )
         }
+
     warning = None
     if media_files:
         warning = (
@@ -557,89 +596,9 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
         else:
             result = {"error": f"Direct sending not yet implemented for {platform.value}"}
 
-    # Discord fresh-thread delivery needs special handling when the message is
-    # chunked: we must create exactly one thread, then post the remaining chunks
-    # into that same thread instead of spawning a new thread per chunk.
-    if platform == Platform.DISCORD and create_new_thread:
-        if not chunks:
-            chunks = [""]
-
-        first_result = await _send_discord(
-            pconfig.token,
-            chat_id,
-            chunks[0],
-            thread_id=thread_id,
-            create_new_thread=True,
-            thread_name=thread_name,
-            auto_archive_duration=auto_archive_duration,
-        )
-        if isinstance(first_result, dict) and first_result.get("error"):
-            return first_result
-        last_result = first_result
-
-        new_thread_id = None
-        if isinstance(first_result, dict):
-            new_thread_id = first_result.get("thread_id")
-        if not new_thread_id:
-            return {"error": "Discord fresh-thread delivery did not return a thread_id"}
-
-        for chunk in chunks[1:]:
-            result = await _send_discord(
-                pconfig.token,
-                chat_id,
-                chunk,
-                thread_id=new_thread_id,
-                create_new_thread=False,
-                thread_name=thread_name,
-                auto_archive_duration=auto_archive_duration,
-            )
-            if isinstance(result, dict) and result.get("error"):
-                return result
-            if isinstance(result, dict) and result.get("success"):
-                result = {**result, "thread_id": result.get("thread_id") or new_thread_id}
-            last_result = result
-    else:
-        for chunk in chunks:
-            if platform == Platform.DISCORD:
-                result = await _send_discord(
-                    pconfig.token,
-                    chat_id,
-                    chunk,
-                    thread_id=thread_id,
-                    create_new_thread=create_new_thread,
-                    thread_name=thread_name,
-                    auto_archive_duration=auto_archive_duration,
-                )
-            elif platform == Platform.SLACK:
-                result = await _send_slack(pconfig.token, chat_id, chunk)
-            elif platform == Platform.WHATSAPP:
-                result = await _send_whatsapp(pconfig.extra, chat_id, chunk)
-            elif platform == Platform.SIGNAL:
-                result = await _send_signal(pconfig.extra, chat_id, chunk)
-            elif platform == Platform.EMAIL:
-                result = await _send_email(pconfig.extra, chat_id, chunk)
-            elif platform == Platform.SMS:
-                result = await _send_sms(pconfig.api_key, chat_id, chunk)
-            elif platform == Platform.MATTERMOST:
-                result = await _send_mattermost(pconfig.token, pconfig.extra, chat_id, chunk)
-            elif platform == Platform.MATRIX:
-                result = await _send_matrix(pconfig.token, pconfig.extra, chat_id, chunk)
-            elif platform == Platform.HOMEASSISTANT:
-                result = await _send_homeassistant(pconfig.token, pconfig.extra, chat_id, chunk)
-            elif platform == Platform.DINGTALK:
-                result = await _send_dingtalk(pconfig.extra, chat_id, chunk)
-            elif platform == Platform.FEISHU:
-                result = await _send_feishu(pconfig, chat_id, chunk, thread_id=thread_id)
-            elif platform == Platform.WECOM:
-                result = await _send_wecom(pconfig.extra, chat_id, chunk)
-            elif platform == Platform.BLUEBUBBLES:
-                result = await _send_bluebubbles(pconfig.extra, chat_id, chunk)
-            else:
-                result = {"error": f"Direct sending not yet implemented for {platform.value}"}
-
-            if isinstance(result, dict) and result.get("error"):
-                return result
-            last_result = result
+        if isinstance(result, dict) and result.get("error"):
+            return result
+        last_result = result
 
     if warning and isinstance(last_result, dict) and last_result.get("success"):
         warnings = list(last_result.get("warnings", []))
@@ -777,7 +736,9 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
         return _error(f"Telegram send failed: {e}")
 
 
-async def _send_discord(token, chat_id, message, thread_id=None, media_files=None):
+async def _send_discord(token, chat_id, message, thread_id=None, media_files=None,
+                        create_new_thread: bool = False, thread_name: str | None = None,
+                        auto_archive_duration: int = 1440):
     """Send a single message via Discord REST API (no websocket client needed).
 
     Chunking is handled by _send_to_platform() before this is called.

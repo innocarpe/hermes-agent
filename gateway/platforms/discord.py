@@ -462,6 +462,7 @@ class DiscordAdapter(BasePlatformAdapter):
         # Reply threading mode: "off" (no replies), "first" (reply on first
         # chunk only, default), "all" (reply-reference on every chunk).
         self._reply_to_mode: str = getattr(config, 'reply_to_mode', 'first') or 'first'
+        self._slash_commands: bool = self.config.extra.get("slash_commands", True)
 
     async def connect(self) -> bool:
         """Connect to Discord and start receiving events."""
@@ -594,7 +595,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 # This replaces the older DISCORD_IGNORE_NO_MENTION logic
                 # with bot-aware filtering that works correctly when multiple
                 # agents share a channel.
-                if not isinstance(message.channel, discord.DMChannel) and message.mentions:
+                if not self._is_dm_channel_obj(message.channel) and message.mentions:
                     _self_mentioned = (
                         self._client.user is not None
                         and self._client.user in message.mentions
@@ -650,7 +651,8 @@ class DiscordAdapter(BasePlatformAdapter):
                     )
 
             # Register slash commands
-            self._register_slash_commands()
+            if self._slash_commands:
+                self._register_slash_commands()
 
             # Start the bot in background
             self._bot_task = asyncio.create_task(self._client.start(self.config.token))
@@ -1748,13 +1750,13 @@ class DiscordAdapter(BasePlatformAdapter):
                 return {"name": str(chat_id), "type": "dm"}
 
             # Determine channel type
-            if isinstance(channel, discord.DMChannel):
+            if self._is_dm_channel_obj(channel):
                 chat_type = "dm"
                 name = channel.recipient.name if channel.recipient else str(chat_id)
-            elif isinstance(channel, discord.Thread):
+            elif self._is_thread_channel_obj(channel):
                 chat_type = "thread"
                 name = channel.name
-            elif isinstance(channel, discord.TextChannel):
+            elif self._is_text_channel_obj(channel):
                 chat_type = "channel"
                 name = f"#{channel.name}"
                 if channel.guild:
@@ -2233,8 +2235,8 @@ class DiscordAdapter(BasePlatformAdapter):
 
     def _build_slash_event(self, interaction: discord.Interaction, text: str) -> MessageEvent:
         """Build a MessageEvent from a Discord slash command interaction."""
-        is_dm = isinstance(interaction.channel, discord.DMChannel)
-        is_thread = isinstance(interaction.channel, discord.Thread)
+        is_dm = self._is_dm_channel_obj(interaction.channel)
+        is_thread = self._is_thread_channel_obj(interaction.channel)
         thread_id = None
         chat_id = str(interaction.channel_id)
 
@@ -2440,7 +2442,7 @@ class DiscordAdapter(BasePlatformAdapter):
         channel = await self._resolve_interaction_channel(interaction)
         if channel is None:
             return {"error": "Could not resolve the current Discord channel."}
-        if isinstance(channel, discord.DMChannel):
+        if self._is_dm_channel_obj(channel):
             return {"error": "Discord threads can only be created inside server text channels, not DMs."}
 
         parent_channel = self._thread_parent_channel(channel)
@@ -2761,13 +2763,49 @@ class DiscordAdapter(BasePlatformAdapter):
             return False
         return bool(channel_keys & refs)
 
+    @staticmethod
+    def _discord_class(name: str):
+        cls = getattr(discord, name, None)
+        return cls if isinstance(cls, type) else None
+
+    def _is_dm_channel_obj(self, channel: Any) -> bool:
+        cls = self._discord_class("DMChannel")
+        if cls is not None:
+            try:
+                return isinstance(channel, cls)
+            except TypeError:
+                pass
+        return getattr(channel, "guild", None) is None and getattr(channel, "parent", None) is None and getattr(channel, "parent_id", None) is None
+
+    def _is_thread_channel_obj(self, channel: Any) -> bool:
+        cls = self._discord_class("Thread")
+        if cls is not None:
+            try:
+                return isinstance(channel, cls)
+            except TypeError:
+                pass
+        return getattr(channel, "parent", None) is not None or getattr(channel, "parent_id", None) is not None
+
+    def _is_text_channel_obj(self, channel: Any) -> bool:
+        cls = self._discord_class("TextChannel")
+        if cls is not None:
+            try:
+                return isinstance(channel, cls)
+            except TypeError:
+                pass
+        return not self._is_dm_channel_obj(channel) and not self._is_thread_channel_obj(channel) and hasattr(channel, "send") and hasattr(channel, "id")
+
     def _is_forum_parent(self, channel: Any) -> bool:
         """Best-effort check for whether a Discord channel is a forum channel."""
         if channel is None:
             return False
-        forum_cls = getattr(discord, "ForumChannel", None)
-        if forum_cls and isinstance(channel, forum_cls):
-            return True
+        forum_cls = self._discord_class("ForumChannel")
+        if forum_cls is not None:
+            try:
+                if isinstance(channel, forum_cls):
+                    return True
+            except TypeError:
+                pass
         channel_type = getattr(channel, "type", None)
         if channel_type is not None:
             type_value = getattr(channel_type, "value", channel_type)
@@ -2816,13 +2854,13 @@ class DiscordAdapter(BasePlatformAdapter):
 
         thread_id = None
         parent_channel_id = None
-        is_thread = isinstance(message.channel, discord.Thread)
+        is_thread = self._is_thread_channel_obj(message.channel)
         if is_thread:
             thread_id = str(message.channel.id)
             parent_channel_id = self._get_parent_channel_id(message.channel)
 
         is_voice_linked_channel = False
-        if not isinstance(message.channel, discord.DMChannel):
+        if not self._is_dm_channel_obj(message.channel):
             channel_ids = {str(message.channel.id)}
             if parent_channel_id:
                 channel_ids.add(parent_channel_id)
@@ -2871,7 +2909,7 @@ class DiscordAdapter(BasePlatformAdapter):
         # Messages already inside threads or DMs are unaffected.
         # no_thread_channels: channels where bot responds directly without thread.
         auto_threaded_channel = None
-        if not is_thread and not isinstance(message.channel, discord.DMChannel):
+        if not is_thread and not self._is_dm_channel_obj(message.channel):
             no_thread_channels_raw = os.getenv("DISCORD_NO_THREAD_CHANNELS", "")
             skip_thread = self._matches_channel_reference(channel_keys, no_thread_channels_raw)
             auto_thread = os.getenv("DISCORD_AUTO_THREAD", "true").lower() in ("true", "1", "yes")
@@ -2911,7 +2949,7 @@ class DiscordAdapter(BasePlatformAdapter):
         effective_channel = auto_threaded_channel or message.channel
 
         # Determine chat type
-        if isinstance(message.channel, discord.DMChannel):
+        if self._is_dm_channel_obj(message.channel):
             chat_type = "dm"
             chat_name = message.author.name
         elif is_thread:

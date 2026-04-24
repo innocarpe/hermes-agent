@@ -321,6 +321,16 @@ class TestExtractMedia:
         assert "Here" in cleaned
         assert "After" in cleaned
 
+    def test_media_tag_supports_document_and_archive_extensions(self):
+        content = "MEDIA:/tmp/report.pdf\nMEDIA:'/tmp/archive bundle.zip'\nMEDIA:`/tmp/brief.docx`"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert media == [
+            ("/tmp/report.pdf", False),
+            ("/tmp/archive bundle.zip", False),
+            ("/tmp/brief.docx", False),
+        ]
+        assert cleaned == ""
+
 
 # ---------------------------------------------------------------------------
 # truncate_message

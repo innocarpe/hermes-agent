@@ -54,14 +54,15 @@ def _ensure_discord_mock():
     commands_mod.Bot = MagicMock
     ext_mod.commands = commands_mod
 
-    sys.modules.setdefault("discord", discord_mod)
-    sys.modules.setdefault("discord.ext", ext_mod)
-    sys.modules.setdefault("discord.ext.commands", commands_mod)
+    sys.modules["discord"] = discord_mod
+    sys.modules["discord.ext"] = ext_mod
+    sys.modules["discord.ext.commands"] = commands_mod
 
 
 _ensure_discord_mock()
 
-from gateway.platforms.discord import DiscordAdapter  # noqa: E402
+import gateway.platforms.discord as discord_platform  # noqa: E402
+DiscordAdapter = discord_platform.DiscordAdapter  # noqa: E402
 
 
 class FakeTree:
@@ -89,9 +90,46 @@ def adapter(monkeypatch):
     monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
     monkeypatch.delenv("DISCORD_IGNORED_CHANNELS", raising=False)
     monkeypatch.delenv("DISCORD_NO_THREAD_CHANNELS", raising=False)
+    monkeypatch.setattr(discord_platform.discord, "DMChannel", type("DMChannel", (), {}), raising=False)
+    monkeypatch.setattr(discord_platform.discord, "Thread", type("Thread", (), {}), raising=False)
+    monkeypatch.setattr(discord_platform.discord, "ForumChannel", type("ForumChannel", (), {}), raising=False)
+
+    class _FakeGroup:
+        def __init__(self, *, name, description, parent=None):
+            self.name = name
+            self.description = description
+            self.parent = parent
+            self._children = {}
+            if parent is not None:
+                parent.add_command(self)
+
+        def add_command(self, cmd):
+            self._children[cmd.name] = cmd
+
+    class _FakeCommand:
+        def __init__(self, *, name, description, callback, parent=None):
+            self.name = name
+            self.description = description
+            self.callback = callback
+            self.parent = parent
+
+    monkeypatch.setattr(
+        discord_platform.discord,
+        "app_commands",
+        SimpleNamespace(
+            describe=lambda **kwargs: (lambda fn: fn),
+            choices=lambda **kwargs: (lambda fn: fn),
+            Choice=lambda **kwargs: SimpleNamespace(**kwargs),
+            Group=_FakeGroup,
+            Command=_FakeCommand,
+        ),
+        raising=False,
+    )
 
     config = PlatformConfig(enabled=True, token="***")
     adapter = DiscordAdapter(config)
+    adapter._is_thread_channel_obj = lambda ch: getattr(ch, "parent", None) is not None or getattr(ch, "parent_id", None) is not None
+    adapter._is_dm_channel_obj = lambda ch: getattr(ch, "guild", None) is None and getattr(ch, "parent", None) is None and getattr(ch, "parent_id", None) is None and not hasattr(ch, "create_thread")
     adapter._client = SimpleNamespace(
         tree=FakeTree(),
         get_channel=lambda _id: None,

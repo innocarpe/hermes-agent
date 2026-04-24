@@ -123,6 +123,9 @@ def _apply_profile_override() -> None:
             print(f"Warning: profile override failed ({exc}), using default", file=sys.stderr)
             return
         os.environ["HERMES_HOME"] = hermes_home
+        profile_home = Path(hermes_home) / "home"
+        if profile_home.is_dir():
+            os.environ["HOME"] = str(profile_home)
         # Strip the flag from argv so argparse doesn't choke
         if consume > 0:
             for i, arg in enumerate(argv):
@@ -753,6 +756,11 @@ def cmd_chat(args):
     # --source: tag session source for filtering (e.g. 'tool' for third-party integrations)
     if getattr(args, "source", None):
         os.environ["HERMES_SESSION_SOURCE"] = args.source
+
+    if getattr(args, "ignore_user_config", False):
+        os.environ["HERMES_IGNORE_USER_CONFIG"] = "1"
+    if getattr(args, "ignore_rules", False):
+        os.environ["HERMES_IGNORE_RULES"] = "1"
 
     # Import and run the CLI
     from cli import main as cli_main
@@ -4895,6 +4903,18 @@ For more help on a command:
         "-Q", "--quiet",
         action="store_true",
         help="Quiet mode for programmatic use: suppress banner, spinner, and tool previews. Only output the final response and session info."
+    )
+    chat_parser.add_argument(
+        "--ignore-user-config",
+        action="store_true",
+        default=False,
+        help="Ignore ~/.hermes/config.yaml and use built-in/project defaults for this run"
+    )
+    chat_parser.add_argument(
+        "--ignore-rules",
+        action="store_true",
+        default=False,
+        help="Skip AGENTS.md / SOUL.md / .cursorrules / memory auto-injection for this run"
     )
     chat_parser.add_argument(
         "--resume", "-r",

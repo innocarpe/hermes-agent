@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
+import ast
+import importlib
 import os
 from pathlib import Path
-
-from dotenv import load_dotenv
 
 
 # Env var name suffixes that indicate credential values.  These are the
@@ -31,11 +31,63 @@ def _sanitize_loaded_credentials() -> None:
             os.environ[key] = value.encode("ascii", errors="ignore").decode("ascii")
 
 
+def _parse_dotenv_text(text: str) -> dict[str, str]:
+    """Parse simple KEY=VALUE dotenv content without relying on import-time state."""
+    parsed: dict[str, str] = {}
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[len("export "):].lstrip()
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        if not key:
+            continue
+        value = value.strip()
+        if value and value[0] in {'"', "'"} and value[-1:] == value[0]:
+            try:
+                value = ast.literal_eval(value)
+            except Exception:
+                value = value[1:-1]
+        parsed[key] = value
+    return parsed
+
+
+def _read_dotenv_pairs(path: Path) -> dict[str, str]:
+    for encoding in ("utf-8", "latin-1"):
+        try:
+            return _parse_dotenv_text(path.read_text(encoding=encoding))
+        except UnicodeDecodeError:
+            continue
+    return {}
+
+
+def _apply_dotenv_pairs(values: dict[str, str], *, override: bool) -> None:
+    for key, value in values.items():
+        if override or key not in os.environ:
+            os.environ[key] = value
+
+
 def _load_dotenv_with_fallback(path: Path, *, override: bool) -> None:
+    """Load dotenv vars even when tests stub the ``dotenv`` module with a no-op."""
+    loaded = False
     try:
-        load_dotenv(dotenv_path=path, override=override, encoding="utf-8")
-    except UnicodeDecodeError:
-        load_dotenv(dotenv_path=path, override=override, encoding="latin-1")
+        dotenv_mod = importlib.import_module("dotenv")
+        load_dotenv = getattr(dotenv_mod, "load_dotenv", None)
+        if callable(load_dotenv) and getattr(dotenv_mod, "__file__", None):
+            try:
+                load_dotenv(dotenv_path=path, override=override, encoding="utf-8")
+            except UnicodeDecodeError:
+                load_dotenv(dotenv_path=path, override=override, encoding="latin-1")
+            loaded = True
+    except Exception:
+        loaded = False
+
+    if not loaded:
+        _apply_dotenv_pairs(_read_dotenv_pairs(path), override=override)
     # Strip non-ASCII characters from credential env vars that were just
     # loaded.  API keys must be pure ASCII since they're sent as HTTP
     # header values (httpx encodes headers as ASCII).  Non-ASCII chars

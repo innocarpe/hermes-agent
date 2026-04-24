@@ -223,7 +223,10 @@ def prompt_choice(question: str, choices: list, default: int = 0, description: s
     Escape keeps the current default (skips the question).
     Ctrl+C exits the wizard.
     """
-    idx = _curses_prompt_choice(question, choices, default, description=description)
+    try:
+        idx = _curses_prompt_choice(question, choices, default, description=description)
+    except TypeError:
+        idx = _curses_prompt_choice(question, choices, default)
     if idx >= 0:
         if idx == default:
             print_info("  Skipped (keeping current)")

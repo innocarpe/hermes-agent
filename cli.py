@@ -203,9 +203,10 @@ def load_cli_config() -> Dict[str, Any]:
     # Check user config first ({HERMES_HOME}/config.yaml)
     user_config_path = _hermes_home / 'config.yaml'
     project_config_path = Path(__file__).parent / 'cli-config.yaml'
+    ignore_user_config = os.environ.get("HERMES_IGNORE_USER_CONFIG") == "1"
 
     # Use user config if it exists, otherwise project config
-    if user_config_path.exists():
+    if not ignore_user_config and user_config_path.exists():
         config_path = user_config_path
     else:
         config_path = project_config_path

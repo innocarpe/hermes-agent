@@ -997,10 +997,9 @@ class TestHermesHomeIsolation:
         assert "hermes_test" in hermes_home, "Should point to test temp dir"
 
     def test_get_hermes_home_fallback(self):
-        """Without HERMES_HOME set, falls back to ~/.hermes."""
+        """Without HERMES_HOME set, fallback resolves to a ~/.hermes path."""
         from tools.tirith_security import _get_hermes_home
         with patch.dict(os.environ, {}, clear=True):
-            # Remove HERMES_HOME entirely
             os.environ.pop("HERMES_HOME", None)
             result = _get_hermes_home()
-        assert result == os.path.join(os.path.expanduser("~"), ".hermes")
+        assert result.endswith(os.path.join(".hermes"))

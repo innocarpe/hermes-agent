@@ -4,6 +4,7 @@ import os
 import pytest
 from pathlib import Path
 
+from hermes_constants import get_hermes_home
 from tools.file_operations import _is_write_denied
 
 
@@ -33,7 +34,7 @@ class TestWriteDenyExactPaths:
         assert _is_write_denied(path) is True
 
     def test_hermes_env(self):
-        path = os.path.join(str(Path.home()), ".hermes", ".env")
+        path = os.path.join(str(get_hermes_home()), ".env")
         assert _is_write_denied(path) is True
 
     def test_shell_profiles(self):

@@ -49,6 +49,7 @@ WRITE_DENIED_PATHS = {
         os.path.join(_HOME, ".ssh", "id_ed25519"),
         os.path.join(_HOME, ".ssh", "config"),
         str(get_hermes_home() / ".env"),
+        os.path.join(_HOME, ".hermes", ".env"),
         os.path.join(_HOME, ".bashrc"),
         os.path.join(_HOME, ".zshrc"),
         os.path.join(_HOME, ".profile"),
@@ -100,8 +101,13 @@ def _is_write_denied(path: str) -> bool:
     """Return True if path is on the write deny list."""
     resolved = os.path.realpath(os.path.expanduser(str(path)))
 
+    dynamic_denied = {
+        os.path.realpath(str(get_hermes_home() / ".env")),
+        os.path.realpath(os.path.join(str(Path.home()), ".hermes", ".env")),
+    }
+
     # 1) Static deny list
-    if resolved in WRITE_DENIED_PATHS:
+    if resolved in WRITE_DENIED_PATHS or resolved in dynamic_denied:
         return True
     for prefix in WRITE_DENIED_PREFIXES:
         if resolved.startswith(prefix):

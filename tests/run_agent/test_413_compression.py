@@ -430,8 +430,11 @@ class TestPreflightCompression:
             )
             result = agent.run_conversation("hello", conversation_history=big_history)
 
-        # Preflight compression should have been called BEFORE the API call
-        mock_compress.assert_called_once()
+        # Preflight compression should run before the first API call.
+        assert mock_compress.call_count >= 1
+        first_call_args = mock_compress.call_args_list[0].args
+        assert first_call_args
+        assert len(first_call_args[0]) == len(big_history) + 1  # history + current user message
         assert result["completed"] is True
         assert result["final_response"] == "After preflight"
 

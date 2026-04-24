@@ -1694,12 +1694,14 @@ class FeishuAdapter(BasePlatformAdapter):
         message_id: str,
         content: str,
         *,
+        metadata=None,
         finalize: bool = False,
     ) -> SendResult:
         """Edit a previously sent Feishu text/post message."""
         if not self._client:
             return SendResult(success=False, error="Not connected")
 
+        content = self.format_message(content)
         try:
             msg_type, payload = self._build_outbound_payload(content)
             body = self._build_update_message_body(msg_type=msg_type, content=payload)

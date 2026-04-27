@@ -35,6 +35,8 @@ HERMES_DIR = get_hermes_home().resolve()
 CRON_DIR = HERMES_DIR / "cron"
 JOBS_FILE = CRON_DIR / "jobs.json"
 OUTPUT_DIR = CRON_DIR / "output"
+DELETED_BACKUPS_DIR = CRON_DIR / ".deleted-backups"
+DELETED_BACKUPS_KEEP = 50
 ONESHOT_GRACE_SECONDS = 120
 
 
@@ -572,12 +574,56 @@ def trigger_job(job_id: str) -> Optional[Dict[str, Any]]:
     )
 
 
+def _snapshot_jobs_before_remove(reason: str = "remove") -> Optional[Path]:
+    """Snapshot jobs.json into .deleted-backups/ before a destructive change.
+
+    Each remove call leaves a timestamped copy so accidental deletions can be
+    recovered without forensic work. Old snapshots beyond DELETED_BACKUPS_KEEP
+    are pruned (oldest first) to keep the directory bounded.
+    """
+    if not JOBS_FILE.exists():
+        return None
+    try:
+        DELETED_BACKUPS_DIR.mkdir(parents=True, exist_ok=True)
+        _secure_dir(DELETED_BACKUPS_DIR)
+        ts = _hermes_now().strftime("%Y%m%d-%H%M%S")
+        dest = DELETED_BACKUPS_DIR / f"jobs-{ts}-{reason}.json"
+        # Avoid clobbering same-second snapshots
+        suffix = 0
+        while dest.exists():
+            suffix += 1
+            dest = DELETED_BACKUPS_DIR / f"jobs-{ts}-{reason}-{suffix}.json"
+        with open(JOBS_FILE, "rb") as src, open(dest, "wb") as out:
+            out.write(src.read())
+        _secure_file(dest)
+        # Prune old snapshots
+        snaps = sorted(DELETED_BACKUPS_DIR.glob("jobs-*.json"))
+        if len(snaps) > DELETED_BACKUPS_KEEP:
+            for old in snaps[:-DELETED_BACKUPS_KEEP]:
+                try:
+                    old.unlink()
+                except OSError:
+                    pass
+        return dest
+    except (OSError, IOError) as exc:
+        logger.warning("Failed to snapshot jobs.json before %s: %s", reason, exc)
+        return None
+
+
 def remove_job(job_id: str) -> bool:
-    """Remove a job by ID."""
+    """Remove a job by ID.
+
+    Before the file is rewritten, the current jobs.json is snapshotted into
+    ``.deleted-backups/`` so the previous state can be recovered. See the
+    ``hermes-cron-recovery`` skill for the recovery procedure.
+    """
     jobs = load_jobs()
     original_len = len(jobs)
     jobs = [j for j in jobs if j["id"] != job_id]
     if len(jobs) < original_len:
+        backup = _snapshot_jobs_before_remove(reason=f"remove-{job_id[:12]}")
+        if backup:
+            logger.info("cron.remove_job: snapshot saved at %s", backup)
         save_jobs(jobs)
         return True
     return False

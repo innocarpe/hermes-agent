@@ -8,8 +8,10 @@ After a crash (no marker), suspension still fires as a safety net for stuck sess
 """
 
 import os
+import sys
 from datetime import datetime, timedelta
 from pathlib import Path
+from types import ModuleType
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -87,10 +89,18 @@ class TestSuspendRecentlyActive:
 # Clean shutdown marker integration
 # ---------------------------------------------------------------------------
 
+@pytest.fixture
+def browser_tool_stub(monkeypatch):
+    module = ModuleType("tools.browser_tool")
+    module.cleanup_all_browsers = MagicMock()
+    monkeypatch.setitem(sys.modules, "tools.browser_tool", module)
+    return module
+
+
 class TestCleanShutdownMarker:
     """Test that the marker file controls session suspension on startup."""
 
-    def test_marker_written_on_graceful_stop(self, tmp_path, monkeypatch):
+    def test_marker_written_on_graceful_stop(self, tmp_path, monkeypatch, browser_tool_stub):
         """stop() should write .clean_shutdown marker."""
         monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
         marker = tmp_path / ".clean_shutdown"
@@ -123,8 +133,7 @@ class TestCleanShutdownMarker:
              patch("gateway.run.GatewayRunner._update_runtime_status"), \
              patch("gateway.status.remove_pid_file"), \
              patch("tools.process_registry.process_registry") as mock_proc_reg, \
-             patch("tools.terminal_tool.cleanup_all_environments"), \
-             patch("tools.browser_tool.cleanup_all_browsers"):
+             patch("tools.terminal_tool.cleanup_all_environments"):
             mock_proc_reg.kill_all = MagicMock()
 
             import asyncio
@@ -186,7 +195,7 @@ class TestCleanShutdownMarker:
             suspended_count = sum(1 for e in store._entries.values() if e.suspended)
         assert suspended_count == 1, "Session should be suspended after crash (no marker)"
 
-    def test_marker_written_on_restart_stop(self, tmp_path, monkeypatch):
+    def test_marker_written_on_restart_stop(self, tmp_path, monkeypatch, browser_tool_stub):
         """stop(restart=True) should also write the marker."""
         monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
         marker = tmp_path / ".clean_shutdown"
@@ -216,8 +225,7 @@ class TestCleanShutdownMarker:
              patch("gateway.run.GatewayRunner._update_runtime_status"), \
              patch("gateway.status.remove_pid_file"), \
              patch("tools.process_registry.process_registry") as mock_proc_reg, \
-             patch("tools.terminal_tool.cleanup_all_environments"), \
-             patch("tools.browser_tool.cleanup_all_browsers"):
+             patch("tools.terminal_tool.cleanup_all_environments"):
             mock_proc_reg.kill_all = MagicMock()
 
             import asyncio

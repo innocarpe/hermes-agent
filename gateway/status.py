@@ -204,8 +204,8 @@ def _write_json_file(path: Path, payload: dict[str, Any]) -> None:
     path.write_text(json.dumps(payload))
 
 
-def _read_pid_record() -> Optional[dict]:
-    pid_path = _get_pid_path()
+def _read_pid_record(pid_path: Optional[Path] = None) -> Optional[dict]:
+    pid_path = pid_path or _get_pid_path()
     if not pid_path.exists():
         return None
 
@@ -579,6 +579,88 @@ def release_all_scoped_locks() -> int:
             except OSError:
                 pass
     return removed
+
+
+# ── --replace takeover marker ─────────────────────────────────────────
+_TAKEOVER_MARKER_FILENAME = ".gateway-takeover.json"
+_TAKEOVER_MARKER_TTL_S = 60
+
+
+def _get_takeover_marker_path() -> Path:
+    home = get_hermes_home()
+    return home / _TAKEOVER_MARKER_FILENAME
+
+
+def write_takeover_marker(target_pid: int) -> bool:
+    try:
+        target_start_time = _get_process_start_time(target_pid)
+        record = {
+            "target_pid": target_pid,
+            "target_start_time": target_start_time,
+            "replacer_pid": os.getpid(),
+            "written_at": _utc_now_iso(),
+        }
+        _write_json_file(_get_takeover_marker_path(), record)
+        return True
+    except (OSError, PermissionError):
+        return False
+
+
+def consume_takeover_marker_for_self() -> bool:
+    path = _get_takeover_marker_path()
+    record = _read_json_file(path)
+    if not record:
+        return False
+
+    try:
+        target_pid = int(record["target_pid"])
+        target_start_time = record.get("target_start_time")
+        written_at = record.get("written_at") or ""
+    except (KeyError, TypeError, ValueError):
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return False
+
+    stale = False
+    try:
+        written_dt = datetime.fromisoformat(written_at)
+        age = (datetime.now(timezone.utc) - written_dt).total_seconds()
+        if age > _TAKEOVER_MARKER_TTL_S:
+            stale = True
+    except (TypeError, ValueError):
+        stale = True
+
+    if stale:
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return False
+
+    our_pid = os.getpid()
+    our_start_time = _get_process_start_time(our_pid)
+    matches = (
+        target_pid == our_pid
+        and target_start_time is not None
+        and our_start_time is not None
+        and target_start_time == our_start_time
+    )
+
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+    return matches
+
+
+def clear_takeover_marker() -> None:
+    try:
+        _get_takeover_marker_path().unlink(missing_ok=True)
+    except OSError:
+        pass
 
 
 def get_running_pid(pid_path: Optional[Path] = None, *, cleanup_stale: bool = True) -> Optional[int]:
